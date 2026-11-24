@@ -7,7 +7,7 @@ interface ModifierBarProps {
   product: Product | null;
   onClose: () => void;
   onAddToCart?: (product: Product, modifiers: SelectedModifier[]) => void;
-  mode?: "add" | "edit";
+  mode?: "add" | "edit" | "catalog";
   initialModifiers?: SelectedModifier[];
   onChangeModifiers?: (modifiers: SelectedModifier[]) => void;
 }
@@ -24,7 +24,7 @@ export const ModifierBar: React.FC<ModifierBarProps> = ({
 
   // En el carrito, la selección es controlada por la línea para recalcular al instante.
   const selectedModsForView: Record<string, ModifierOption> =
-    mode === "edit" && product
+    mode !== "add" && product
       ? Object.fromEntries(
           (initialModifiers ?? [])
             .map((selected) => {
@@ -65,6 +65,23 @@ export const ModifierBar: React.FC<ModifierBarProps> = ({
     const next = { ...selectedModsForView };
     const isCurrentlySelected = !!next[mod.id];
 
+    if (
+      mode === "catalog" &&
+      isCurrentlySelected &&
+      mod.exclusive &&
+      mod.group
+    ) {
+      onAddToCart?.(
+        product,
+        Object.values(next).map((modifier) => ({
+          modifierId: modifier.id,
+          name: modifier.name,
+          priceDelta: modifier.priceDelta,
+        })),
+      );
+      return;
+    }
+
     if (mod.exclusive && mod.group) {
       Object.keys(next).forEach((id) => {
         if (next[id].group === mod.group) delete next[id];
@@ -76,14 +93,18 @@ export const ModifierBar: React.FC<ModifierBarProps> = ({
       next[mod.id] = mod;
     }
 
-    if (mode === "edit") {
-      onChangeModifiers?.(
-        Object.values(next).map((modifier) => ({
+    if (mode !== "add") {
+      const nextSelected: SelectedModifier[] = Object.values(next).map(
+        (modifier) => ({
           modifierId: modifier.id,
           name: modifier.name,
           priceDelta: modifier.priceDelta,
-        })),
+        }),
       );
+      onChangeModifiers?.(nextSelected);
+      if (mode === "catalog" && !isCurrentlySelected) {
+        onAddToCart?.(product, nextSelected);
+      }
     } else {
       setSelectedMods(next);
     }
@@ -103,6 +124,66 @@ export const ModifierBar: React.FC<ModifierBarProps> = ({
     onAddToCart?.(product, selectedArray);
     onClose();
   };
+
+  if (mode === "catalog") {
+    return (
+      <div
+        className="border-t border-slate-800 px-2.5 pb-2.5 pt-2"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Elegí extras · {formatCurrency(finalUnitPrice)} c/u
+            </span>
+            <p className="text-[10px] text-slate-500">
+              Al seleccionar un extra se agrega al carrito. Podés elegir más.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-white"
+            aria-label={`Cancelar selección de extras para ${product.name}`}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {product.isCombo && product.comboIncludes && product.comboIncludes.length > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 text-[10px] text-purple-200">
+            <Utensils className="h-3 w-3 shrink-0 text-purple-400" />
+            <span>
+              Incluye: {product.comboIncludes.map((item) => `${item.qty}x ${item.label}`).join(" + ")}
+            </span>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-1">
+          {product.modifiers?.map((mod) => {
+            const isSelected = !!selectedModsForView[mod.id];
+            return (
+              <button
+                key={mod.id}
+                type="button"
+                onClick={() => toggleModifier(mod)}
+                aria-pressed={isSelected}
+                className={`rounded border px-1.5 py-1 text-[10px] transition-colors ${
+                  isSelected
+                    ? "border-emerald-500 bg-emerald-950 text-emerald-300"
+                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+                }`}
+              >
+                {isSelected ? "✓ " : ""}
+                {mod.name}
+                {mod.priceDelta > 0
+                  ? ` +${formatCurrency(mod.priceDelta)}`
+                  : ""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   if (mode === "edit") {
     return (

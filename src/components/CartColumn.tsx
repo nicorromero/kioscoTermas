@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ShoppingCart,
   Trash2,
@@ -13,6 +13,8 @@ import {
 import type { CartItem, Product, SelectedModifier } from "../types/pos";
 import { formatCurrency } from "../utils/format";
 import { ModifierBar } from "./ModifierBar";
+
+const QUICK_DISCOUNT_PERCENTAGES = [5, 10, 15, 20];
 
 interface CartColumnProps {
   cart: CartItem[];
@@ -50,25 +52,61 @@ export const CartColumn: React.FC<CartColumnProps> = ({
   onChangeModifiers,
 }) => {
   const [showDiscountInput, setShowDiscountInput] = useState(false);
-  const [discountVal, setDiscountVal] = useState(cartDiscount.toString());
+  const [discountVal, setDiscountVal] = useState("0");
   const [showModifierEditor, setShowModifierEditor] = useState(false);
+  const pendingLineClick = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const totalUnits = cart.reduce((sum, i) => sum + i.qty, 0);
   const finalTotal = Math.max(0, cartTotal - cartDiscount);
+  const appliedDiscountPercent =
+    cartTotal > 0 ? Number(((cartDiscount / cartTotal) * 100).toFixed(2)) : 0;
 
-  const handleApplyDiscount = () => {
-    const num = parseFloat(discountVal) || 0;
-    onSetDiscount(num);
+  useEffect(
+    () => () => {
+      if (pendingLineClick.current) clearTimeout(pendingLineClick.current);
+    },
+    [],
+  );
+
+  const applyDiscountPercent = (percent: number) => {
+    onSetDiscount(Math.round((cartTotal * percent) / 100));
+    setDiscountVal(percent.toString());
     setShowDiscountInput(false);
   };
 
-  const handleLineClick = (lineKey: string) => {
-    if (lineKey === selectedLineKey) {
-      onUpdateQty(lineKey, 1);
+  const handleLineClick = (lineKey: string, clickCount: number) => {
+    if (clickCount === 3) {
+      if (pendingLineClick.current) {
+        clearTimeout(pendingLineClick.current);
+        pendingLineClick.current = null;
+      }
+      onRemoveItem(lineKey);
       return;
     }
-    setShowModifierEditor(false);
-    onSelectLine(lineKey);
+    if (clickCount === 2) {
+      if (pendingLineClick.current) {
+        clearTimeout(pendingLineClick.current);
+        pendingLineClick.current = null;
+      }
+      return;
+    }
+    if (clickCount !== 1) return;
+
+    if (pendingLineClick.current) clearTimeout(pendingLineClick.current);
+    pendingLineClick.current = setTimeout(() => {
+      pendingLineClick.current = null;
+      if (lineKey !== selectedLineKey) {
+        setShowModifierEditor(false);
+        onSelectLine(lineKey);
+      }
+    }, 350);
+  };
+
+  const selectLine = (lineKey: string) => {
+    if (lineKey !== selectedLineKey) {
+      setShowModifierEditor(false);
+      onSelectLine(lineKey);
+    }
   };
 
   return (
@@ -120,17 +158,21 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                 key={item.lineKey}
                 role="button"
                 tabIndex={0}
-                onClick={() => handleLineClick(item.lineKey)}
+                onClick={(event) => handleLineClick(item.lineKey, event.detail)}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  onUpdateQty(item.lineKey, 1);
+                }}
                 onKeyDown={(event) => {
                   if (
                     event.target === event.currentTarget &&
                     (event.key === "Enter" || event.key === " ")
                   ) {
                     event.preventDefault();
-                    handleLineClick(item.lineKey);
+                    selectLine(item.lineKey);
                   }
                 }}
-                aria-label={`${item.name}, cantidad ${item.qty}, subtotal ${formatCurrency(item.subtotal)}`}
+                aria-label={`${item.name}, cantidad ${item.qty}, subtotal ${formatCurrency(item.subtotal)}. Doble clic para sumar una unidad; triple clic para eliminar.`}
                 className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
                   isSelected
                     ? "bg-slate-850 border-emerald-400 ring-1 ring-emerald-500/60 shadow-sm shadow-emerald-950/40"
@@ -144,9 +186,15 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                       <p className="font-semibold text-xs text-white truncate">
                         {item.name}
                       </p>
+                      <span
+                        className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-200"
+                        aria-label={`Cantidad ${item.qty}`}
+                      >
+                        ×{item.qty}
+                      </span>
                       {isSelected && (
                         <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 shrink-0">
-                          Seleccionado [+/-]
+                          Seleccionado
                         </span>
                       )}
                     </div>
@@ -161,8 +209,13 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                 </div>
 
                 {/* Modificadores Seleccionados */}
-                {item.selectedModifiers.length > 0 && (
-                  <div className="mt-1.5 pt-1 border-t border-slate-800/60 flex flex-wrap gap-1">
+                {(item.selectedModifiers.length > 0 ||
+                  (isSelected && hasModifiers && originalProduct)) && (
+                  <div
+                    className="mt-1.5 pt-1 border-t border-slate-800/60 flex flex-wrap items-center gap-1"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
                     {item.selectedModifiers.map((mod) => (
                       <span
                         key={mod.modifierId}
@@ -176,78 +229,81 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                         )}
                       </span>
                     ))}
+                    {isSelected && hasModifiers && originalProduct && (
+                      <button
+                        type="button"
+                        onClick={() => setShowModifierEditor((show) => !show)}
+                        className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1"
+                        aria-expanded={showModifierEditor}
+                        title="Modificar extras"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        <span>Extras</span>
+                      </button>
+                    )}
                   </div>
                 )}
 
                 {/* Controles visibles al seleccionar la línea */}
                 {isSelected && (
                   <div
-                    className="mt-2 flex items-center justify-between pt-1 border-t border-slate-800/40"
+                    className="mt-2 flex flex-col gap-2 pt-2 border-t border-slate-800/40"
                     onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
                   >
-                    <div className="flex items-center gap-1">
+                    <div className="grid grid-cols-[1fr_auto_1fr_1fr] items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onUpdateQty(item.lineKey, 1)}
+                        className="h-11 w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition-colors"
+                        aria-label="Sumar una unidad"
+                        title="Sumar una unidad"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </button>
+                      <span
+                        className="flex h-11 min-w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-2 font-mono text-sm font-bold text-white"
+                        aria-label={`Cantidad actual: ${item.qty}`}
+                      >
+                        {item.qty}
+                      </span>
                       <button
                         type="button"
                         onClick={() => onUpdateQty(item.lineKey, -1)}
-                        className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
-                        title="Disminuir (-)"
+                        className="h-11 w-full rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 flex items-center justify-center transition-colors"
+                        aria-label="Restar una unidad"
+                        title="Restar una unidad"
                       >
-                        <Minus className="w-3 h-3" />
+                        <Minus className="w-5 h-5" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQty(item.lineKey, 1)}
-                        className="font-mono font-bold text-xs text-white px-2 min-w-6 text-center rounded hover:bg-slate-800"
-                        title="Aumentar cantidad (+1)"
-                      >
-                        {item.qty}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQty(item.lineKey, 1)}
-                        className="rounded bg-slate-800 px-1.5 h-6 hover:bg-slate-700 text-slate-300 flex items-center gap-1 transition-colors"
-                        title="Aumentar (+1)"
-                      >
-                        <Plus className="w-3 h-3" />
-                        <span className="text-[10px]">+1</span>
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      {hasModifiers && originalProduct && (
-                        <button
-                          type="button"
-                          onClick={() => setShowModifierEditor((show) => !show)}
-                          className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1"
-                          aria-expanded={showModifierEditor}
-                          title="Modificar extras"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                          <span>Extras</span>
-                        </button>
-                      )}
                       <button
                         type="button"
                         onClick={() => onRemoveItem(item.lineKey)}
-                        className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                        className="h-11 w-full rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-300 flex items-center justify-center transition-colors"
+                        aria-label="Eliminar ítem"
                         title="Eliminar ítem"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-5 h-5" />
                       </button>
                     </div>
                   </div>
                 )}
 
                 {isSelected && showModifierEditor && hasModifiers && originalProduct && (
-                  <ModifierBar
-                    product={originalProduct}
-                    mode="edit"
-                    initialModifiers={item.selectedModifiers}
-                    onClose={() => setShowModifierEditor(false)}
-                    onChangeModifiers={(modifiers) =>
-                      onChangeModifiers(item.lineKey, originalProduct, modifiers)
-                    }
-                  />
+                  <div
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <ModifierBar
+                      product={originalProduct}
+                      mode="edit"
+                      initialModifiers={item.selectedModifiers}
+                      onClose={() => setShowModifierEditor(false)}
+                      onChangeModifiers={(modifiers) =>
+                        onChangeModifiers(item.lineKey, originalProduct, modifiers)
+                      }
+                    />
+                  </div>
                 )}
               </div>
             );
@@ -269,11 +325,22 @@ export const CartColumn: React.FC<CartColumnProps> = ({
           <div className="flex justify-between items-center text-slate-400">
             <button
               type="button"
-              onClick={() => setShowDiscountInput(!showDiscountInput)}
+              onClick={() => {
+                if (!showDiscountInput) {
+                  setDiscountVal(
+                    cartTotal > 0 ? appliedDiscountPercent.toString() : "0",
+                  );
+                }
+                setShowDiscountInput((show) => !show);
+              }}
               className="text-[11px] text-slate-400 hover:text-emerald-400 flex items-center gap-1 underline underline-offset-2"
             >
               <Percent className="w-3 h-3" />
-              <span>{cartDiscount > 0 ? "Descuento aplicado" : "Aplicar descuento"}</span>
+              <span>
+                {cartDiscount > 0
+                  ? `Descuento aplicado (${appliedDiscountPercent}%)`
+                  : "Aplicar descuento"}
+              </span>
             </button>
             <span className="font-mono text-rose-400">
               {cartDiscount > 0 ? `-${formatCurrency(cartDiscount)}` : "$0"}
@@ -281,24 +348,58 @@ export const CartColumn: React.FC<CartColumnProps> = ({
           </div>
 
           {showDiscountInput && (
-            <div className="flex items-center gap-1.5 pt-1">
-              <input
-                type="number"
-                min="0"
-                step="500"
-                value={discountVal}
-                onChange={(e) => setDiscountVal(e.target.value)}
-                placeholder="Monto en $"
-                className="w-full px-2 py-1 bg-slate-950 border border-slate-700 rounded text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
-              />
-              <button
-                type="button"
-                onClick={handleApplyDiscount}
-                className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded text-xs font-bold"
-              >
-                OK
-              </button>
-            </div>
+            <form
+              className="space-y-2 pt-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                applyDiscountPercent(Number(discountVal));
+              }}
+            >
+              <div className="flex items-center gap-1.5">
+                <label
+                  htmlFor="cart-discount-percent"
+                  className="shrink-0 text-[11px] text-slate-400"
+                >
+                  Descuento:
+                </label>
+                <div className="flex min-w-0 flex-1 items-center rounded border border-slate-700 bg-slate-950 pr-2 focus-within:border-emerald-500">
+                  <input
+                    id="cart-discount-percent"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    required
+                    value={discountVal}
+                    onChange={(e) => setDiscountVal(e.target.value)}
+                    placeholder="5"
+                    className="w-full min-w-0 bg-transparent px-2 py-1 text-xs font-mono text-white focus:outline-none"
+                  />
+                  <span className="text-xs text-slate-400">%</span>
+                </div>
+                <button
+                  type="submit"
+                  className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded text-xs font-bold"
+                >
+                  Aplicar
+                </button>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="shrink-0 text-[10px] text-slate-500">
+                  Rápidos:
+                </span>
+                {QUICK_DISCOUNT_PERCENTAGES.map((percent) => (
+                  <button
+                    key={percent}
+                    type="button"
+                    onClick={() => applyDiscountPercent(percent)}
+                    className="flex-1 rounded bg-slate-800 px-1.5 py-1 text-[10px] font-mono text-slate-200 hover:bg-slate-700 hover:text-emerald-400 transition-colors"
+                  >
+                    {percent}%
+                  </button>
+                ))}
+              </div>
+            </form>
           )}
         </div>
 
