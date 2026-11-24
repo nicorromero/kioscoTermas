@@ -1,0 +1,291 @@
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { usePosStore } from "./store/usePosStore";
+import { usePosShortcuts } from "./hooks/usePosShortcuts";
+import type {
+  Product,
+  SelectedModifier,
+  PaymentMethod,
+  InvoiceType,
+  FiscalCustomer,
+} from "./types/pos";
+
+import { Header, type PosDemoView } from "./components/Header";
+import { CatalogColumn } from "./components/CatalogColumn";
+import { CartColumn } from "./components/CartColumn";
+import { QueueColumn } from "./components/QueueColumn";
+import { PaymentModal } from "./components/PaymentModal";
+import { QuickCashModal } from "./components/QuickCashModal";
+import { SimulationPanel } from "./components/SimulationPanel";
+import { BillingOfflineView } from "./components/BillingOfflineView";
+import { OwnerMobileView } from "./components/OwnerMobileView";
+
+export function App() {
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Navegación "Modo Demo" (3 Vistas) ──
+  const [activeView, setActiveView] = useState<PosDemoView>("caja");
+
+  // ── Store State & Actions ──
+  const hydrate = usePosStore((s) => s.hydrate);
+  const products = usePosStore((s) => s.products);
+  const productsMap = usePosStore((s) => s.productsMap);
+  const catalogReady = usePosStore((s) => s.catalogReady);
+  const cart = usePosStore((s) => s.cart);
+  const cartTotal = usePosStore((s) => s.cartTotal);
+  const cartDiscount = usePosStore((s) => s.cartDiscount);
+  const queue = usePosStore((s) => s.queue);
+
+  const addToCartStore = usePosStore((s) => s.addToCart);
+  const removeFromCart = usePosStore((s) => s.removeFromCart);
+  const updateQty = usePosStore((s) => s.updateQty);
+  const clearCart = usePosStore((s) => s.clearCart);
+  const setCartDiscount = usePosStore((s) => s.setCartDiscount);
+  const toggleFavorite = usePosStore((s) => s.toggleFavorite);
+
+  const submitSaleStore = usePosStore((s) => s.submitSale);
+  const markSalePaid = usePosStore((s) => s.markSalePaid);
+  const markSaleRejected = usePosStore((s) => s.markSaleRejected);
+  const retrySale = usePosStore((s) => s.retrySale);
+  const cancelSale = usePosStore((s) => s.cancelSale);
+  const recordCashPayment = usePosStore((s) => s.recordCashPayment);
+
+  // ── Estado UI Local ──
+  const [configuringProduct, setConfiguringProduct] = useState<Product | null>(null);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isQuickCashModalOpen, setIsQuickCashModalOpen] = useState(false);
+  const [isSimulationOpen, setIsSimulationOpen] = useState(false);
+  const [lastActiveLineKey, setLastActiveLineKey] = useState<string | null>(null);
+
+  // Inicialización (IndexedDB hydrate)
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  // Wrapper para añadir al carrito y marcar como último activo para atajos +/-
+  const handleAddToCart = useCallback(
+    (product: Product, modifiers: SelectedModifier[] = []) => {
+      addToCartStore(product, modifiers);
+      const sorted = [...modifiers].map((m) => m.modifierId).sort().join(",");
+      const key = `${product.id}::${sorted}`;
+      setLastActiveLineKey(key);
+    },
+    [addToCartStore]
+  );
+
+  const handleUpdateQty = useCallback(
+    (lineKey: string, delta: number) => {
+      updateQty(lineKey, delta);
+      setLastActiveLineKey(lineKey);
+    },
+    [updateQty]
+  );
+
+  // Atajos: +/- sobre el último ítem (activo únicamente si no hay modales abiertos)
+  const handleIncrementLastItem = useCallback(() => {
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    const targetKey =
+      lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
+        ? lastActiveLineKey
+        : cart[cart.length - 1].lineKey;
+    handleUpdateQty(targetKey, 1);
+  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+
+  const handleDecrementLastItem = useCallback(() => {
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    const targetKey =
+      lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
+        ? lastActiveLineKey
+        : cart[cart.length - 1].lineKey;
+    handleUpdateQty(targetKey, -1);
+  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+
+  // Atajo Esc: Cierra modales/paneles sin tocar el carrito
+  const handleEscape = useCallback(() => {
+    if (isPaymentModalOpen) {
+      setIsPaymentModalOpen(false);
+      return;
+    }
+    if (isQuickCashModalOpen) {
+      setIsQuickCashModalOpen(false);
+      return;
+    }
+    if (configuringProduct) {
+      setConfiguringProduct(null);
+      return;
+    }
+    if (isSimulationOpen) {
+      setIsSimulationOpen(false);
+      return;
+    }
+  }, [isPaymentModalOpen, isQuickCashModalOpen, configuringProduct, isSimulationOpen]);
+
+  // Atajo F8: Abrir cobro normal (QR, Tarjeta, Efectivo)
+  const handleOpenCheckout = useCallback(() => {
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    setIsPaymentModalOpen(true);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+
+  // Atajo F9: Efectivo Rápido (Factura B + vuelto instantáneo)
+  const handleQuickCash = useCallback(() => {
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    setIsQuickCashModalOpen(true);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+
+  // Registro de atajos de teclado (deshabilitados fuera de la vista Caja)
+  usePosShortcuts({
+    searchInputRef,
+    onOpenCheckout: handleOpenCheckout,
+    onQuickCash: handleQuickCash,
+    onEscape: handleEscape,
+    onIncrementLastItem: handleIncrementLastItem,
+    onDecrementLastItem: handleDecrementLastItem,
+    disabled: activeView !== "caja",
+  });
+
+  // Finalizar cobro desde el modal general (F8)
+  const handleSubmitSale = async (
+    method: PaymentMethod,
+    notes?: string,
+    cashReceived?: number,
+    invoiceType: InvoiceType = "FACTURA_B",
+    customer?: FiscalCustomer
+  ) => {
+    const sale = await submitSaleStore(
+      method,
+      notes,
+      invoiceType,
+      customer,
+      cashReceived
+    );
+    setLastActiveLineKey(null);
+
+    // Si fue en efectivo con dinero recibido, liquidar y emitir factura inmediatamente
+    if (method === "EFECTIVO" && cashReceived !== undefined) {
+      await recordCashPayment(sale.id, cashReceived, invoiceType, customer);
+    }
+  };
+
+  // Confirmar cobro rápido en efectivo (F9)
+  const handleConfirmQuickCash = async (
+    cashReceived: number,
+    invoiceType: InvoiceType = "FACTURA_B",
+    customer?: FiscalCustomer
+  ) => {
+    const sale = await submitSaleStore(
+      "EFECTIVO",
+      "Cobro Rápido Mostrador",
+      invoiceType,
+      customer,
+      cashReceived
+    );
+    setLastActiveLineKey(null);
+    await recordCashPayment(sale.id, cashReceived, invoiceType, customer);
+  };
+
+  // Reabrir modificadores de un ítem existente en el carrito
+  const handleEditModifiers = (
+    product: Product,
+    currentModifiers: SelectedModifier[]
+  ) => {
+    setConfiguringProduct(product);
+  };
+
+  if (!catalogReady) {
+    return (
+      <div className="h-full flex items-center justify-center bg-slate-950 text-white font-mono gap-3">
+        <span className="w-4 h-4 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin" />
+        <span>Iniciando Catálogo e IndexedDB...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      {/* ── Barra Superior ("Modo Demo" con Selector de 3 Vistas) ── */}
+      <Header
+        activeView={activeView}
+        onSelectView={setActiveView}
+        onToggleSimulation={() => setIsSimulationOpen(!isSimulationOpen)}
+        simulationOpen={isSimulationOpen}
+        queuedCount={queue.length}
+      />
+
+      {/* ── Vista 1: Caja Kiosco (3 Columnas) ── */}
+      {activeView === "caja" && (
+        <main className="flex-1 flex overflow-hidden">
+          {/* Columna 1: Catálogo (~55%) */}
+          <CatalogColumn
+            products={products}
+            searchInputRef={searchInputRef}
+            onAddToCart={handleAddToCart}
+            onToggleFavorite={toggleFavorite}
+            configuringProduct={configuringProduct}
+            setConfiguringProduct={setConfiguringProduct}
+          />
+
+          {/* Columna 2: Carrito Activo (~25%) */}
+          <CartColumn
+            cart={cart}
+            cartTotal={cartTotal}
+            cartDiscount={cartDiscount}
+            lastActiveLineKey={lastActiveLineKey}
+            productsMap={productsMap}
+            onUpdateQty={handleUpdateQty}
+            onRemoveItem={removeFromCart}
+            onClearCart={clearCart}
+            onSetDiscount={setCartDiscount}
+            onOpenCheckout={handleOpenCheckout}
+            onQuickCash={handleQuickCash}
+            onEditModifiers={handleEditModifiers}
+          />
+
+          {/* Columna 3: Cola Lateral (~20%) */}
+          <QueueColumn
+            queue={queue}
+            onMarkPaid={markSalePaid}
+            onMarkRejected={markSaleRejected}
+            onRetry={retrySale}
+            onCancel={cancelSale}
+          />
+        </main>
+      )}
+
+      {/* ── Vista 2: Facturación B/A + Offline ── */}
+      {activeView === "facturacion" && <BillingOfflineView />}
+
+      {/* ── Vista 3: Celular Dueño ── */}
+      {activeView === "dueno" && <OwnerMobileView />}
+
+      {/* ── Modal de Cobro General (F8) ── */}
+      <PaymentModal
+        isOpen={isPaymentModalOpen}
+        onClose={() => setIsPaymentModalOpen(false)}
+        cartTotal={cartTotal}
+        cartDiscount={cartDiscount}
+        itemCount={cart.reduce((sum, i) => sum + i.qty, 0)}
+        onSubmitSale={handleSubmitSale}
+      />
+
+      {/* ── Modal de Efectivo Rápido (F9) ── */}
+      <QuickCashModal
+        isOpen={isQuickCashModalOpen}
+        onClose={() => setIsQuickCashModalOpen(false)}
+        cartTotal={cartTotal}
+        cartDiscount={cartDiscount}
+        itemCount={cart.reduce((sum, i) => sum + i.qty, 0)}
+        onConfirmQuickCash={handleConfirmQuickCash}
+      />
+
+      {/* ── Panel Flotante de Simulación QR / Webhooks ── */}
+      <SimulationPanel
+        isOpen={isSimulationOpen}
+        onClose={() => setIsSimulationOpen(false)}
+        queue={queue}
+        onMarkPaid={markSalePaid}
+        onMarkRejected={markSaleRejected}
+      />
+    </div>
+  );
+}
+
+export default App;
