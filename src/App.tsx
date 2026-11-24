@@ -54,12 +54,30 @@ export function App() {
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isQuickCashModalOpen, setIsQuickCashModalOpen] = useState(false);
   const [isSimulationOpen, setIsSimulationOpen] = useState(false);
+  const [isProductDrawerOpen, setIsProductDrawerOpen] = useState(false);
+  const [drawerTargetProduct, setDrawerTargetProduct] = useState<Product | null>(null);
   const [lastActiveLineKey, setLastActiveLineKey] = useState<string | null>(null);
 
   // Inicialización (IndexedDB hydrate)
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Manejadores del Drawer de Productos
+  const handleOpenNewProduct = useCallback(() => {
+    setDrawerTargetProduct(null);
+    setIsProductDrawerOpen(true);
+  }, []);
+
+  const handleEditProduct = useCallback((product: Product) => {
+    setDrawerTargetProduct(product);
+    setIsProductDrawerOpen(true);
+  }, []);
+
+  const handleCloseDrawer = useCallback(() => {
+    setIsProductDrawerOpen(false);
+    setDrawerTargetProduct(null);
+  }, []);
 
   // Wrapper para añadir al carrito y marcar como último activo para atajos +/-
   const handleAddToCart = useCallback(
@@ -80,27 +98,32 @@ export function App() {
     [updateQty]
   );
 
-  // Atajos: +/- sobre el último ítem (activo únicamente si no hay modales abiertos)
+  // Atajos: +/- sobre el último ítem (activo únicamente si no hay modales ni drawer abiertos)
   const handleIncrementLastItem = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     const targetKey =
       lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
         ? lastActiveLineKey
         : cart[cart.length - 1].lineKey;
     handleUpdateQty(targetKey, 1);
-  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
   const handleDecrementLastItem = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     const targetKey =
       lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
         ? lastActiveLineKey
         : cart[cart.length - 1].lineKey;
     handleUpdateQty(targetKey, -1);
-  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
   // Atajo Esc: Cierra modales/paneles sin tocar el carrito
   const handleEscape = useCallback(() => {
+    if (isProductDrawerOpen) {
+      setIsProductDrawerOpen(false);
+      setDrawerTargetProduct(null);
+      return;
+    }
     if (isPaymentModalOpen) {
       setIsPaymentModalOpen(false);
       return;
@@ -117,21 +140,21 @@ export function App() {
       setIsSimulationOpen(false);
       return;
     }
-  }, [isPaymentModalOpen, isQuickCashModalOpen, configuringProduct, isSimulationOpen]);
+  }, [isProductDrawerOpen, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct, isSimulationOpen]);
 
   // Atajo F8: Abrir cobro normal (QR, Tarjeta, Efectivo)
   const handleOpenCheckout = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     setIsPaymentModalOpen(true);
-  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
   // Atajo F9: Efectivo Rápido (Factura B + vuelto instantáneo)
   const handleQuickCash = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     setIsQuickCashModalOpen(true);
-  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct]);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
-  // Registro de atajos de teclado (deshabilitados fuera de la vista Caja)
+  // Registro de atajos de teclado (deshabilitados fuera de la vista Caja o con Drawer abierto)
   usePosShortcuts({
     searchInputRef,
     onOpenCheckout: handleOpenCheckout,
@@ -139,7 +162,7 @@ export function App() {
     onEscape: handleEscape,
     onIncrementLastItem: handleIncrementLastItem,
     onDecrementLastItem: handleDecrementLastItem,
-    disabled: activeView !== "caja",
+    disabled: activeView !== "caja" || isProductDrawerOpen,
   });
 
   // Finalizar cobro desde el modal general (F8)
@@ -221,6 +244,11 @@ export function App() {
             onToggleFavorite={toggleFavorite}
             configuringProduct={configuringProduct}
             setConfiguringProduct={setConfiguringProduct}
+            isProductDrawerOpen={isProductDrawerOpen}
+            drawerTargetProduct={drawerTargetProduct}
+            onOpenNewProduct={handleOpenNewProduct}
+            onEditProduct={handleEditProduct}
+            onCloseProductDrawer={handleCloseDrawer}
           />
 
           {/* Columna 2: Carrito Activo (~25%) */}

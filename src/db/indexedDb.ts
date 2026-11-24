@@ -275,6 +275,30 @@ export async function toggleFavorite(productId: string): Promise<void> {
     });
 }
 
+export async function putProduct(product: Product): Promise<void> {
+  await db.products.put(product);
+}
+
+export async function deleteProduct(id: string): Promise<void> {
+  await db.products.delete(id);
+}
+
+export async function isBarcodeAvailable(
+  businessId: string,
+  branchId: string,
+  barcode: string,
+  excludeId?: string,
+): Promise<boolean> {
+  const clean = barcode.trim();
+  if (!clean) return true;
+  const match = await db.products
+    .where("[businessId+branchId]")
+    .equals([businessId, branchId])
+    .and((p) => p.barcode === clean && p.id !== excludeId)
+    .first();
+  return !match;
+}
+
 /* ══════════════════════════════════════════════════════════════════════════════
    Sales CRUD
    ══════════════════════════════════════════════════════════════════════════════ */

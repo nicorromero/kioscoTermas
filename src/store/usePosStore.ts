@@ -7,6 +7,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
 import type {
   Product,
+  ProductFormData,
   CartItem,
   SelectedModifier,
   Sale,
@@ -33,7 +34,14 @@ import {
   getSetting,
   setSetting,
   toggleFavorite as dbToggleFavorite,
+  putProduct,
+  deleteProduct,
 } from "../db/indexedDb";
+import {
+  generateProductId,
+  normalizeBarcode,
+  cloneProductData,
+} from "../utils/productUtils";
 
 /* ══════════════════════════════════════════════════════════════════════════════
    Helpers
@@ -168,6 +176,9 @@ export interface PosState {
 
   // ── Acciones: catálogo ──
   toggleFavorite: (productId: string) => Promise<void>;
+  upsertProduct: (formData: ProductFormData, productId?: string) => Promise<Product>;
+  duplicateProduct: (sourceId: string, newName?: string) => Promise<Product>;
+  removeProduct: (productId: string) => Promise<void>;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -809,6 +820,85 @@ export const usePosStore = create<PosState>()(
       });
 
       await dbToggleFavorite(productId);
+    },
+
+    upsertProduct: async (formData: ProductFormData, productId?: string) => {
+      const { businessId, branchId, products, productsMap } = get();
+
+      let id = productId || formData.id;
+      if (!id) {
+        let candidate = generateProductId(formData.category, formData.name);
+        if (productsMap.has(candidate)) {
+          candidate = `${candidate}-${Date.now().toString(36).slice(-4)}`;
+        }
+        id = candidate;
+      }
+
+      const cleanBarcode = formData.barcode
+        ? normalizeBarcode(formData.barcode)
+        : undefined;
+
+      const productToSave: Product = {
+        ...formData,
+        id,
+        businessId,
+        branchId,
+        barcode: cleanBarcode || undefined,
+        shortName: formData.shortName?.trim() || undefined,
+      };
+
+      // Persistir en IndexedDB
+      await putProduct(productToSave);
+
+      // Actualizar síncronamente en memoria (O(1) para el Map y reactividad inmediata)
+      const existingIndex = products.findIndex((p) => p.id === id);
+      let newProducts: Product[];
+      if (existingIndex >= 0) {
+        newProducts = [...products];
+        newProducts[existingIndex] = productToSave;
+      } else {
+        newProducts = [productToSave, ...products];
+      }
+
+      const newMap = new Map(productsMap);
+      newMap.set(id, productToSave);
+
+      set({
+        products: newProducts,
+        productsMap: newMap,
+      });
+
+      return productToSave;
+    },
+
+    duplicateProduct: async (sourceId: string, newName?: string) => {
+      const { productsMap, products, upsertProduct } = get();
+      const source = productsMap.get(sourceId) || products.find((p) => p.id === sourceId);
+      if (!source) {
+        throw new Error(`Producto con ID ${sourceId} no encontrado para duplicar`);
+      }
+
+      const clonedData = cloneProductData(source, newName);
+      let newId = `${source.id}-copia`;
+      if (productsMap.has(newId)) {
+        newId = `${newId}-${Date.now().toString(36).slice(-4)}`;
+      }
+
+      return upsertProduct(clonedData, newId);
+    },
+
+    removeProduct: async (productId: string) => {
+      await deleteProduct(productId);
+
+      const { products, productsMap } = get();
+      const newProducts = products.filter((p) => p.id !== productId);
+      const newMap = new Map(productsMap);
+      newMap.delete(productId);
+
+      set({
+        products: newProducts,
+        productsMap: newMap,
+      });
     },
   })),
 );

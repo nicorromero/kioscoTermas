@@ -1,8 +1,9 @@
 import React, { useState, useMemo, type RefObject } from "react";
-import { Search, Star, Sparkles, UtensilsCrossed, Layers, Barcode, Plus } from "lucide-react";
+import { Search, Star, Sparkles, UtensilsCrossed, Layers, Barcode, Plus, Pencil } from "lucide-react";
 import type { Product, ProductCategory, SelectedModifier } from "../types/pos";
 import { formatCurrency } from "../utils/format";
 import { ModifierBar } from "./ModifierBar";
+import { ProductDrawer } from "./ProductDrawer";
 
 interface CatalogColumnProps {
   products: Product[];
@@ -11,6 +12,11 @@ interface CatalogColumnProps {
   onToggleFavorite: (productId: string) => void;
   configuringProduct: Product | null;
   setConfiguringProduct: (p: Product | null) => void;
+  onOpenNewProduct?: () => void;
+  onEditProduct?: (product: Product) => void;
+  isProductDrawerOpen?: boolean;
+  drawerTargetProduct?: Product | null;
+  onCloseProductDrawer?: () => void;
 }
 
 const CATEGORIES: (ProductCategory | "TODOS" | "FAVORITOS")[] = [
@@ -30,6 +36,11 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
   onToggleFavorite,
   configuringProduct,
   setConfiguringProduct,
+  onOpenNewProduct,
+  onEditProduct,
+  isProductDrawerOpen = false,
+  drawerTargetProduct = null,
+  onCloseProductDrawer = () => {},
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<
     ProductCategory | "TODOS" | "FAVORITOS"
@@ -92,7 +103,7 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
   };
 
   return (
-    <section className="flex-1 flex flex-col h-full bg-slate-950 border-r border-slate-800 overflow-hidden">
+    <section className="flex-1 flex flex-col h-full bg-slate-950 border-r border-slate-800 overflow-hidden relative">
       {/* ── Barra Superior: Buscador Híbrido ── */}
       <div className="p-3 bg-slate-900/60 border-b border-slate-800/80 flex items-center gap-2 shrink-0">
         <div className="relative flex-1">
@@ -125,6 +136,18 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
 
       {/* ── Categorías (Tabs / Pills) ── */}
       <div className="px-3 py-2 bg-slate-900/30 border-b border-slate-800/80 flex items-center gap-1.5 overflow-x-auto shrink-0 scrollbar-none">
+        {onOpenNewProduct && (
+          <button
+            type="button"
+            onClick={onOpenNewProduct}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shrink-0 shadow-sm shadow-emerald-950/60 transition-all cursor-pointer border border-emerald-500/50"
+            title="Crear un nuevo producto en mostrador"
+          >
+            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+            <span>+ Nuevo Ítem</span>
+          </button>
+        )}
+
         {CATEGORIES.map((cat) => {
           const isSelected = selectedCategory === cat;
           const count =
@@ -187,26 +210,41 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
                     style={{ backgroundColor: product.colorTag || "#10B981" }}
                   />
 
-                  {/* Cabecera del producto & Botón Favorito */}
+                  {/* Cabecera del producto & Botones Acción */}
                   <div className="flex items-start justify-between gap-1 pt-1">
                     <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
                       {product.category}
                     </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleFavorite(product.id);
-                      }}
-                      className="p-1 -mr-1 -mt-1 text-slate-500 hover:text-amber-400 transition-colors"
-                      title={product.isFavorite ? "Quitar de favoritos" : "Marcar como favorito"}
-                    >
-                      <Star
-                        className={`w-3.5 h-3.5 ${
-                          product.isFavorite ? "text-amber-400 fill-amber-400" : ""
-                        }`}
-                      />
-                    </button>
+                    <div className="flex items-center gap-0.5 -mr-1 -mt-1">
+                      {onEditProduct && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditProduct(product);
+                          }}
+                          className="p-1 text-slate-500 hover:text-emerald-400 transition-colors opacity-70 group-hover:opacity-100"
+                          title="Editar o duplicar producto"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleFavorite(product.id);
+                        }}
+                        className="p-1 text-slate-500 hover:text-amber-400 transition-colors"
+                        title={product.isFavorite ? "Quitar de favoritos" : "Marcar como favorito"}
+                      >
+                        <Star
+                          className={`w-3.5 h-3.5 ${
+                            product.isFavorite ? "text-amber-400 fill-amber-400" : ""
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Nombre y Nombre Corto */}
@@ -267,6 +305,13 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
           onAddToCart={onAddToCart}
         />
       )}
+
+      {/* ── Drawer Lateral Express: Alta, Edición y Duplicación ── */}
+      <ProductDrawer
+        isOpen={isProductDrawerOpen}
+        product={drawerTargetProduct}
+        onClose={onCloseProductDrawer}
+      />
     </section>
   );
 };

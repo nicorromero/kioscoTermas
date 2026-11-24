@@ -62,6 +62,21 @@ export interface Product {
   colorTag?: string;
 }
 
+/** Datos del formulario para alta y edición rápida de productos */
+export interface ProductFormData {
+  id?: string;
+  name: string;
+  shortName?: string;
+  category: ProductCategory;
+  basePrice: number;
+  barcode?: string;
+  isCombo?: boolean;
+  comboIncludes?: ComboInclude[];
+  modifiers?: ModifierOption[];
+  isFavorite?: boolean;
+  colorTag?: string;
+}
+
 /* ── Carrito ───────────────────────────────────────────────────────────────── */
 
 export interface SelectedModifier {
