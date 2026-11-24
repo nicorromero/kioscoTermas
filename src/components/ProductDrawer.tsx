@@ -2,7 +2,7 @@
 // Panel deslizante sobre la columna de catálogo para ajustes ultrarrápidos (<10 seg)
 // sin perder el carrito ni abandonar la vista de mostrador.
 
-import React, { useState, useEffect, useId } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   X,
   Save,
@@ -29,7 +29,9 @@ import {
   generateShortName,
   normalizeBarcode,
   MODIFIER_PRESETS,
+  applyProductPreset,
 } from "../utils/productUtils";
+import { lookupBarcodeExternal } from "../utils/barcodeLookup";
 import { isBarcodeAvailable } from "../db/indexedDb";
 import { formatCurrency } from "../utils/format";
 
@@ -38,6 +40,7 @@ interface ProductDrawerProps {
   product: Product | null; // null = Nuevo Producto
   onClose: () => void;
   onSaved?: (savedProduct: Product) => void;
+  onRequestEditProduct?: (product: Product) => void;
 }
 
 const CATEGORIES: ProductCategory[] = [
@@ -62,14 +65,20 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
   product,
   onClose,
   onSaved,
+  onRequestEditProduct,
 }) => {
   const isEditing = Boolean(product);
   const businessId = usePosStore((s) => s.businessId);
   const branchId = usePosStore((s) => s.branchId);
   const allProducts = usePosStore((s) => s.products);
+  const lastProductId = usePosStore((s) => s.lastProductId);
   const upsertProduct = usePosStore((s) => s.upsertProduct);
   const duplicateProduct = usePosStore((s) => s.duplicateProduct);
+  const duplicateLastProduct = usePosStore((s) => s.duplicateLastProduct);
   const removeProduct = usePosStore((s) => s.removeProduct);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const barcodeValidationRequest = useRef(0);
 
   // Estados del Formulario
   const [name, setName] = useState("");
@@ -86,6 +95,8 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
 
   // Estado de validación
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [existingBarcodeProduct, setExistingBarcodeProduct] = useState<Product | null>(null);
+  const [barcodeLookupMessage, setBarcodeLookupMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -126,8 +137,13 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
       setIsFavorite(false);
     }
     setBarcodeError(null);
+    setExistingBarcodeProduct(null);
+    setBarcodeLookupMessage(null);
     setErrorMsg(null);
     setShowAddMod(false);
+    if (!product) {
+      requestAnimationFrame(() => nameInputRef.current?.focus());
+    }
   }, [isOpen, product]);
 
   // Manejar cambio de nombre con auto-sugerencia de nombre corto
@@ -142,9 +158,22 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
   const handleBarcodeChange = async (val: string) => {
     const clean = normalizeBarcode(val);
     setBarcode(clean);
+    setBarcodeLookupMessage(null);
 
     if (!clean) {
+      barcodeValidationRequest.current += 1;
       setBarcodeError(null);
+      setExistingBarcodeProduct(null);
+      return;
+    }
+
+    const requestId = ++barcodeValidationRequest.current;
+    const localMatch = allProducts.find(
+      (item) => normalizeBarcode(item.barcode) === clean,
+    ) ?? null;
+    setExistingBarcodeProduct(localMatch);
+    if (localMatch && localMatch.id !== product?.id) {
+      setBarcodeError(`Código ya asignado a "${localMatch.name}".`);
       return;
     }
 
@@ -154,6 +183,7 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
       clean,
       product?.id
     );
+    if (requestId !== barcodeValidationRequest.current) return;
     if (!available) {
       setBarcodeError("Código de barras ya asignado a otro producto");
     } else {
@@ -161,8 +191,46 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
     }
   };
 
+  const handleBarcodeLookup = async () => {
+    if (!barcode) return;
+
+    const requestId = barcodeValidationRequest.current;
+    setBarcodeLookupMessage(null);
+    const result = await lookupBarcodeExternal(barcode, allProducts);
+    if (requestId !== barcodeValidationRequest.current) return;
+    if (!result) {
+      setBarcodeLookupMessage("Sin datos externos; podés completar el producto manualmente.");
+      return;
+    }
+    if (result.kind === "local") {
+      setExistingBarcodeProduct(result.product);
+      setBarcodeError(
+        result.product.id === product?.id
+          ? null
+          : `Código ya asignado a "${result.product.name}".`,
+      );
+      return;
+    }
+
+    if (!name.trim()) {
+      setName(result.name);
+      if (!isShortNameManuallyEdited) setShortName(generateShortName(result.name));
+      setCategory(result.category);
+    }
+    setBarcodeLookupMessage(
+      name.trim()
+        ? `Encontrado: ${result.name}. No se reemplazaron los datos que ya ingresaste.`
+        : `Nombre y categoría sugeridos desde Open Food Facts: ${result.name}.`,
+    );
+  };
+
   // Aplicar Preset de Modificadores en 1 Clic
   const handleApplyPreset = (presetKey: string) => {
+    if (presetKey === "SANDWICH") {
+      const preset = applyProductPreset("SANDWICH");
+      if (preset.modifiers) setModifiers(preset.modifiers);
+      return;
+    }
     const preset = MODIFIER_PRESETS[presetKey];
     if (!preset) return;
     setModifiers([...preset.modifiers]);
@@ -170,6 +238,21 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
 
   const handleClearModifiers = () => {
     setModifiers([]);
+  };
+
+  const handleApplyComboPreset = () => {
+    const preset = applyProductPreset("COMBO");
+    if (!preset.isCombo) return;
+    setCategory("Combos");
+    setIsCombo(true);
+    setComboIncludes(preset.comboIncludes);
+    setModifiers([]);
+  };
+
+  const handleClearModifiersAndCombo = () => {
+    setModifiers([]);
+    setIsCombo(false);
+    setComboIncludes([]);
   };
 
   const handleRemoveModifier = (id: string) => {
@@ -225,13 +308,13 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
   };
 
   // Guardar Cambios / Crear
-  const handleSave = async (e?: React.FormEvent) => {
+  const handleSave = async (e?: React.FormEvent, closeAfterSave = true) => {
     if (e) e.preventDefault();
     if (!name.trim()) {
       setErrorMsg("El nombre del producto es obligatorio.");
       return;
     }
-    if (basePrice < 0 || isNaN(basePrice)) {
+    if (!Number.isFinite(basePrice) || basePrice < 0) {
       setErrorMsg("El precio base debe ser mayor o igual a $0.");
       return;
     }
@@ -267,12 +350,30 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
       };
 
       const saved = await upsertProduct(formData, product?.id);
-      setIsSaving(false);
       onSaved?.(saved);
-      onClose();
-    } catch (err: any) {
+      if (closeAfterSave) {
+        onClose();
+      } else {
+        setName("");
+        setShortName("");
+        setIsShortNameManuallyEdited(false);
+        setBasePrice(0);
+        setBarcode("");
+        setBarcodeError(null);
+        setExistingBarcodeProduct(null);
+        setBarcodeLookupMessage(null);
+        setIsCombo(false);
+        setComboIncludes([]);
+        setModifiers([]);
+        setIsFavorite(false);
+        setColorTag("#10B981");
+        setShowAddMod(false);
+        requestAnimationFrame(() => nameInputRef.current?.focus());
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Error al guardar producto");
+    } finally {
       setIsSaving(false);
-      setErrorMsg(err.message || "Error al guardar producto");
     }
   };
 
@@ -282,12 +383,27 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
     setIsSaving(true);
     try {
       const duplicated = await duplicateProduct(product.id);
-      setIsSaving(false);
       onSaved?.(duplicated);
       onClose();
-    } catch (err: any) {
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Error al duplicar producto");
+    } finally {
       setIsSaving(false);
-      setErrorMsg(err.message || "Error al duplicar producto");
+    }
+  };
+
+  const handleDuplicateLastProduct = async () => {
+    setIsSaving(true);
+    try {
+      const duplicated = await duplicateLastProduct();
+      onSaved?.(duplicated);
+      onClose();
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Error al duplicar el último producto",
+      );
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -299,11 +415,11 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
     setIsSaving(true);
     try {
       await removeProduct(product.id);
-      setIsSaving(false);
       onClose();
-    } catch (err: any) {
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Error al eliminar producto");
+    } finally {
       setIsSaving(false);
-      setErrorMsg(err.message || "Error al eliminar producto");
     }
   };
 
@@ -362,6 +478,7 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
                 Nombre de Mostrador <span className="text-emerald-400">*</span>
               </label>
               <input
+                ref={nameInputRef}
                 type="text"
                 value={name}
                 onChange={(e) => handleNameChange(e.target.value)}
@@ -450,26 +567,60 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
                 {barcode && (
                   <button
                     type="button"
-                    onClick={() => handleBarcodeChange("")}
+                    onClick={() => void handleBarcodeChange("")}
                     className="text-[10px] text-slate-400 hover:text-white"
                   >
                     Limpiar
                   </button>
                 )}
               </div>
-              <input
-                type="text"
-                value={barcode}
-                onChange={(e) => handleBarcodeChange(e.target.value)}
-                placeholder="Escanee o tipee..."
-                className={`w-full px-3 py-1.5 bg-slate-950 border rounded-lg text-xs font-mono text-white placeholder-slate-500 focus:outline-none ${
-                  barcodeError
-                    ? "border-rose-500 focus:border-rose-500"
-                    : "border-slate-700 focus:border-emerald-500"
-                }`}
-              />
+              <div className="flex gap-1.5">
+                <input
+                  ref={barcodeInputRef}
+                  type="text"
+                  value={barcode}
+                  onChange={(e) => void handleBarcodeChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleBarcodeLookup();
+                    }
+                  }}
+                  placeholder="Escanee o tipee..."
+                  className={`min-w-0 flex-1 px-3 py-1.5 bg-slate-950 border rounded-lg text-xs font-mono text-white placeholder-slate-500 focus:outline-none ${
+                    barcodeError
+                      ? "border-rose-500 focus:border-rose-500"
+                      : "border-slate-700 focus:border-emerald-500"
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={() => barcodeInputRef.current?.focus()}
+                  className="px-2 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:border-emerald-500 hover:text-white"
+                  title="Enfocar para leer con escáner USB"
+                >
+                  <Barcode className="w-4 h-4" />
+                </button>
+              </div>
               {barcodeError && (
                 <p className="text-[10px] text-rose-400 mt-1 font-sans">{barcodeError}</p>
+              )}
+              {existingBarcodeProduct && existingBarcodeProduct.id !== product?.id && (
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-amber-300">
+                  <span className="truncate">Ya existe: {existingBarcodeProduct.name}</span>
+                  {onRequestEditProduct && (
+                    <button
+                      type="button"
+                      onClick={() => onRequestEditProduct(existingBarcodeProduct)}
+                      className="shrink-0 underline hover:text-amber-100"
+                    >
+                      Editar
+                    </button>
+                  )}
+                </div>
+              )}
+              {barcodeLookupMessage && (
+                <p className="mt-1 text-[10px] text-slate-400">{barcodeLookupMessage}</p>
               )}
             </div>
           </div>
@@ -520,15 +671,13 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
                   {modifiers.length} opciones configuradas
                 </span>
               </div>
-              {modifiers.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearModifiers}
-                  className="text-[10px] text-rose-400 hover:text-rose-300"
-                >
-                  Quitar todos
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleClearModifiersAndCombo}
+                className="text-[10px] text-rose-400 hover:text-rose-300"
+              >
+                Limpiar modificadores/combo
+              </button>
             </div>
 
             {/* Botones de Presets de 1 Clic */}
@@ -553,6 +702,18 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
                   </button>
                 ))}
               </div>
+              <button
+                type="button"
+                onClick={handleApplyComboPreset}
+                className="mt-1.5 w-full p-1.5 rounded-lg border border-purple-800/80 bg-purple-950/40 hover:bg-purple-900/60 text-left transition-all"
+              >
+                <div className="font-semibold text-purple-200 text-[11px]">
+                  Preset Combo base
+                </div>
+                <div className="text-[9px] text-purple-300/80">
+                  Sándwich + cono chico de papas + gaseosa
+                </div>
+              </button>
             </div>
 
             {/* Lista actual de modificadores con su priceDelta */}
@@ -780,6 +941,18 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
                 </button>
               </>
             )}
+            {!isEditing && (
+              <button
+                type="button"
+                onClick={handleDuplicateLastProduct}
+                disabled={isSaving || !lastProductId}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700 text-xs font-medium transition-colors"
+                title="Clona el último producto creado o editado y limpia el código de barras"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Duplicar último</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -791,6 +964,16 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
             >
               Cancelar
             </button>
+            {!isEditing && (
+              <button
+                type="button"
+                onClick={() => void handleSave(undefined, false)}
+                disabled={isSaving || Boolean(barcodeError)}
+                className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 text-xs font-medium transition-colors"
+              >
+                Guardar y cargar otro
+              </button>
+            )}
             <button
               type="button"
               onClick={() => handleSave()}
@@ -798,7 +981,9 @@ export const ProductDrawer: React.FC<ProductDrawerProps> = ({
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-950 transition-all cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>{isSaving ? "Guardando..." : isEditing ? "Guardar Cambios" : "Crear Producto"}</span>
+              <span>
+                {isSaving ? "Guardando..." : isEditing ? "Guardar cambios" : "Guardar y cerrar"}
+              </span>
             </button>
           </div>
         </div>

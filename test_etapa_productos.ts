@@ -11,8 +11,12 @@ import {
   PRESET_LICUADOS,
   PRESET_COCCION,
   PRESET_CAFE_SIZE,
+  normalizeProductDraft,
+  validateProductDraft,
+  applyProductPreset,
 } from "./src/utils/productUtils";
-import type { ProductFormData, SelectedModifier } from "./src/types/pos";
+import { lookupBarcodeExternal } from "./src/utils/barcodeLookup";
+import type { Product, ProductFormData, SelectedModifier } from "./src/types/pos";
 
 async function runProductTests() {
   console.log("=== INICIANDO VERIFICACIÓN FASE 1+: PRODUCTOS & DRAWER EXPRESS ===");
@@ -45,6 +49,52 @@ async function runProductTests() {
   console.log(`- normalizeBarcode("${rawBarcode.trim()}") -> "${cleanedBarcode}"`);
   if (cleanedBarcode !== "7791234567890") {
     throw new Error(`Normalización de código de barras falló: "${cleanedBarcode}"`);
+  }
+  const existingDraft: Product = {
+    id: "var-producto-de-prueba",
+    businessId: BIZ,
+    branchId: BRANCH,
+    name: "Producto existente",
+    category: "Varios",
+    basePrice: 100,
+    barcode: "7790000000000",
+  };
+  const normalizedDraft = normalizeProductDraft(
+    {
+      name: "  Producto   de prueba  ",
+      shortName: "  ",
+      category: "Varios",
+      basePrice: 0,
+    },
+    { businessId: BIZ, branchId: BRANCH, existingProducts: [existingDraft] },
+  );
+  if (
+    normalizedDraft.id !== "var-producto-de-prueba-2" ||
+    normalizedDraft.name !== "Producto de prueba" ||
+    !normalizedDraft.shortName
+  ) {
+    throw new Error("La normalización no limpió el draft o evitó una colisión de ID.");
+  }
+  const invalidDraft = {
+    ...normalizedDraft,
+    basePrice: -1,
+    barcode: "7790000000000",
+  };
+  const validationErrors = validateProductDraft(invalidDraft, [existingDraft]);
+  if (validationErrors.length !== 2) {
+    throw new Error("La validación no detectó precio negativo y barcode duplicado.");
+  }
+  const sandwichPreset = applyProductPreset("SANDWICH");
+  if (!sandwichPreset.modifiers?.some((modifier) => modifier.name === "Tostado")) {
+    throw new Error("El preset de sándwich debe incluir la opción Tostado.");
+  }
+  const comboPreset = applyProductPreset("COMBO");
+  if (!comboPreset.isCombo || comboPreset.comboIncludes.length !== 3) {
+    throw new Error("El preset de combo no incluyó los tres productos base.");
+  }
+  const localBarcodeMatch = await lookupBarcodeExternal(" 7790000000000 ", [existingDraft]);
+  if (localBarcodeMatch?.kind !== "local" || localBarcodeMatch.product.id !== existingDraft.id) {
+    throw new Error("La búsqueda de barcode debe priorizar el catálogo local.");
   }
   console.log("✓ Helpers puros validados exitosamente.");
 
@@ -135,6 +185,20 @@ async function runProductTests() {
   const dbDup = await db.products.get(duplicatedProduct.id);
   if (!dbDup) {
     throw new Error("El producto duplicado no fue guardado en IndexedDB");
+  }
+  const duplicatedLastProduct = await usePosStore.getState().duplicateLastProduct();
+  if (
+    duplicatedLastProduct.id === duplicatedProduct.id ||
+    duplicatedLastProduct.barcode !== undefined
+  ) {
+    throw new Error("Duplicar el último producto debe crear un ID nuevo sin barcode.");
+  }
+  await usePosStore.getState().hydrate(BIZ, BRANCH);
+  if (
+    usePosStore.getState().lastProductId !== duplicatedLastProduct.id ||
+    !usePosStore.getState().productsMap.has(duplicatedLastProduct.id)
+  ) {
+    throw new Error("El último producto y su catálogo no sobrevivieron la hidratación de IndexedDB.");
   }
   console.log("✓ Duplicación de producto con reset de código de barras y preservación de extras validada.");
 

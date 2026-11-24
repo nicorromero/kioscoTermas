@@ -33,11 +33,15 @@ export function App() {
   const cart = usePosStore((s) => s.cart);
   const cartTotal = usePosStore((s) => s.cartTotal);
   const cartDiscount = usePosStore((s) => s.cartDiscount);
+  const selectedLineKey = usePosStore((s) => s.selectedLineKey);
   const queue = usePosStore((s) => s.queue);
+  const paymentHistory = usePosStore((s) => s.paymentHistory);
 
   const addToCartStore = usePosStore((s) => s.addToCart);
+  const selectCartLine = usePosStore((s) => s.selectCartLine);
   const removeFromCart = usePosStore((s) => s.removeFromCart);
   const updateQty = usePosStore((s) => s.updateQty);
+  const changeModifiers = usePosStore((s) => s.changeModifiers);
   const clearCart = usePosStore((s) => s.clearCart);
   const setCartDiscount = usePosStore((s) => s.setCartDiscount);
   const toggleFavorite = usePosStore((s) => s.toggleFavorite);
@@ -47,6 +51,7 @@ export function App() {
   const markSaleRejected = usePosStore((s) => s.markSaleRejected);
   const retrySale = usePosStore((s) => s.retrySale);
   const cancelSale = usePosStore((s) => s.cancelSale);
+  const recoverSaleToCart = usePosStore((s) => s.recoverSaleToCart);
   const recordCashPayment = usePosStore((s) => s.recordCashPayment);
 
   // ── Estado UI Local ──
@@ -56,7 +61,11 @@ export function App() {
   const [isSimulationOpen, setIsSimulationOpen] = useState(false);
   const [isProductDrawerOpen, setIsProductDrawerOpen] = useState(false);
   const [drawerTargetProduct, setDrawerTargetProduct] = useState<Product | null>(null);
-  const [lastActiveLineKey, setLastActiveLineKey] = useState<string | null>(null);
+  const [isQueueExpanded, setIsQueueExpanded] = useState(false);
+
+  const rejectedCount = queue.filter(
+    (sale) => sale.status === "PAGO_RECHAZADO",
+  ).length;
 
   // Inicialización (IndexedDB hydrate)
   useEffect(() => {
@@ -79,13 +88,10 @@ export function App() {
     setDrawerTargetProduct(null);
   }, []);
 
-  // Wrapper para añadir al carrito y marcar como último activo para atajos +/-
+  // Wrapper simple: el store activa la línea añadida para los atajos +/-.
   const handleAddToCart = useCallback(
     (product: Product, modifiers: SelectedModifier[] = []) => {
       addToCartStore(product, modifiers);
-      const sorted = [...modifiers].map((m) => m.modifierId).sort().join(",");
-      const key = `${product.id}::${sorted}`;
-      setLastActiveLineKey(key);
     },
     [addToCartStore]
   );
@@ -93,29 +99,52 @@ export function App() {
   const handleUpdateQty = useCallback(
     (lineKey: string, delta: number) => {
       updateQty(lineKey, delta);
-      setLastActiveLineKey(lineKey);
     },
     [updateQty]
   );
 
-  // Atajos: +/- sobre el último ítem (activo únicamente si no hay modales ni drawer abiertos)
+  const handleRecoverSale = useCallback(
+    (saleId: string) => {
+      const sale = paymentHistory.find((entry) => entry.id === saleId);
+      if (!sale) return;
+
+      if (
+        cart.length > 0 &&
+        !window.confirm(
+          "El carrito actual tiene productos. ¿Querés reemplazarlo por este pedido recuperado?",
+        )
+      ) {
+        return;
+      }
+
+      recoverSaleToCart(saleId);
+    },
+    [cart.length, paymentHistory, recoverSaleToCart]
+  );
+
+  const handleOpenRejectedQueue = useCallback(() => {
+    setActiveView("caja");
+    setIsQueueExpanded(true);
+  }, []);
+
+  // Atajos: +/- sobre la línea seleccionada (o la última como fallback).
   const handleIncrementLastItem = useCallback(() => {
     if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     const targetKey =
-      lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
-        ? lastActiveLineKey
+      selectedLineKey && cart.some((i) => i.lineKey === selectedLineKey)
+        ? selectedLineKey
         : cart[cart.length - 1].lineKey;
     handleUpdateQty(targetKey, 1);
-  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
+  }, [cart, selectedLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
   const handleDecrementLastItem = useCallback(() => {
     if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
     const targetKey =
-      lastActiveLineKey && cart.some((i) => i.lineKey === lastActiveLineKey)
-        ? lastActiveLineKey
+      selectedLineKey && cart.some((i) => i.lineKey === selectedLineKey)
+        ? selectedLineKey
         : cart[cart.length - 1].lineKey;
     handleUpdateQty(targetKey, -1);
-  }, [cart, lastActiveLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
+  }, [cart, selectedLineKey, handleUpdateQty, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
 
   // Atajo Esc: Cierra modales/paneles sin tocar el carrito
   const handleEscape = useCallback(() => {
@@ -180,8 +209,6 @@ export function App() {
       customer,
       cashReceived
     );
-    setLastActiveLineKey(null);
-
     // Si fue en efectivo con dinero recibido, liquidar y emitir factura inmediatamente
     if (method === "EFECTIVO" && cashReceived !== undefined) {
       await recordCashPayment(sale.id, cashReceived, invoiceType, customer);
@@ -201,16 +228,7 @@ export function App() {
       customer,
       cashReceived
     );
-    setLastActiveLineKey(null);
     await recordCashPayment(sale.id, cashReceived, invoiceType, customer);
-  };
-
-  // Reabrir modificadores de un ítem existente en el carrito
-  const handleEditModifiers = (
-    product: Product,
-    currentModifiers: SelectedModifier[]
-  ) => {
-    setConfiguringProduct(product);
   };
 
   if (!catalogReady) {
@@ -232,6 +250,28 @@ export function App() {
         simulationOpen={isSimulationOpen}
         queuedCount={queue.length}
       />
+
+      {rejectedCount > 0 && (
+        <div
+          role="alert"
+          className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 bg-rose-950 border-b border-rose-800 text-rose-100"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse shrink-0" />
+            <p className="text-xs sm:text-sm font-medium">
+              {rejectedCount} {rejectedCount === 1 ? "pago rechazado" : "pagos rechazados"} necesita
+              {rejectedCount === 1 ? "" : "n"} atención.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleOpenRejectedQueue}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold transition-colors"
+          >
+            Abrir y resolver cola
+          </button>
+        </div>
+      )}
 
       {/* ── Vista 1: Caja Kiosco (3 Columnas) ── */}
       {activeView === "caja" && (
@@ -256,20 +296,27 @@ export function App() {
             cart={cart}
             cartTotal={cartTotal}
             cartDiscount={cartDiscount}
-            lastActiveLineKey={lastActiveLineKey}
+            selectedLineKey={selectedLineKey}
             productsMap={productsMap}
+            onSelectLine={selectCartLine}
             onUpdateQty={handleUpdateQty}
             onRemoveItem={removeFromCart}
             onClearCart={clearCart}
             onSetDiscount={setCartDiscount}
             onOpenCheckout={handleOpenCheckout}
             onQuickCash={handleQuickCash}
-            onEditModifiers={handleEditModifiers}
+            onChangeModifiers={changeModifiers}
           />
 
           {/* Columna 3: Cola Lateral (~20%) */}
           <QueueColumn
             queue={queue}
+            paymentHistory={paymentHistory}
+            isExpanded={isQueueExpanded}
+            onToggleExpanded={() =>
+              setIsQueueExpanded((expanded) => !expanded)
+            }
+            onRecover={handleRecoverSale}
             onMarkPaid={markSalePaid}
             onMarkRejected={markSaleRejected}
             onRetry={retrySale}

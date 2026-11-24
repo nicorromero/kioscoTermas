@@ -8,6 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "release:check": "npm run typecheck && npm run build",
+    "ship:demo": "npm run release:check",
     "test": "tsc --noEmit && tsx test_etapa2.ts && tsx test_etapa3.ts && tsx test_etapa_productos.ts"
   },
   "keywords": [],

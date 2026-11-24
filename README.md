@@ -11,7 +11,8 @@ Desarrollado con **React 19**, **TypeScript**, **Vite**, **Tailwind CSS v4**, **
 1. **Caja Kiosco (3 Columnas)**
    - **Catálogo (~120 productos):** Sándwiches, milanesas, hamburguesas con modificadores de precio dinámicos, combos integrados, licuados con bases personalizables, bebidas y varios.
    - **Carrito Activo (`BORRADOR`):** Agrupación inteligente por producto y modificadores, edición rápida de cantidades y cálculo reactivo de subtotal/descuentos.
-   - **Cola Lateral (`PENDIENTE_PAGO` / `PAGO_RECHAZADO`):** Despacho instantáneo (0 ms de bloqueo para el operador). Al enviar a cobro por QR o terminal, el carrito se libera de inmediato para atender al siguiente cliente mientras el pago se procesa en segundo plano.
+   - **Cola Lateral (`PENDIENTE_PAGO` / `PAGO_RECHAZADO`):** Minimizada por defecto; un aviso general con contador permite abrirla ante rechazos. Al enviar a cobro por QR o terminal, el carrito se libera de inmediato para atender al siguiente cliente mientras el pago se procesa en segundo plano.
+   - **Recuperación de pedidos:** Historial persistido de los últimos 3 pedidos enviados a cobrar, incluidos rechazados y cancelados. Se pueden recuperar como un nuevo borrador editable, conservando cantidades y extras.
 
 2. **Facturación B/A + Offline**
    - Emisión de **Factura B** (Consumidor Final) y **Factura A** (Responsable Inscripto con validación matemática de CUIT ARCA mediante Módulo 11).
@@ -69,6 +70,21 @@ npm test
 npm run build
 ```
 Genera la carpeta `dist/` lista para ser servida por cualquier hosting estático o CDN.
+
+### 6. Actualización rápida de la demo
+```bash
+npm run ship:demo
+```
+Este preflight ejecuta verificación de TypeScript y build; no crea commits, no hace push y no modifica Git. Si termina correctamente, revisá `git status`, prepará los cambios con `git add`/`git commit` y hacé `git push` según el flujo del repositorio. Con el proyecto conectado a Vercel o Netlify, el push a la rama configurada dispara el despliegue. También podés usar `npm run release:check` para el mismo preflight.
+
+El HTML se revalida al abrir o refrescar, mientras que los archivos de `/assets/` generados por Vite tienen nombres con hash y pueden quedar cacheados de forma inmutable. No se registra ningún Service Worker, por lo que la aplicación no queda fijada a un shell offline viejo. El `F5` descarga/revalida la interfaz según el hosting y carga nuevamente los datos persistidos.
+
+### Persistencia local y actualizaciones
+- Productos, ventas en cola (`PENDIENTE_PAGO` / `PAGO_RECHAZADO`), ventas cerradas, historial reciente de pedidos, comprobantes y settings operativos se guardan en IndexedDB bajo la base `KioscoTermasPOS`. Actualizar el código o presionar `F5` no borra esa base.
+- El carrito borrador está solo en memoria: si se recarga la página antes de enviarlo, se pierde. Las ventas ya enviadas quedan persistidas.
+- Agregar propiedades opcionales a tipos no modifica por sí solo el esquema de IndexedDB. Si se agregan índices, tablas o transformaciones de registros, incrementá `db.version(n)` y definí una migración Dexie no destructiva; nunca borres stores o datos de producción como parte de una actualización de UI.
+- IndexedDB pertenece al origen exacto (protocolo, host y puerto) y al perfil del navegador. `localhost`, una IP de LAN y un dominio publicado usan bases separadas. En una terminal compartida, mantené un origen estable y el mismo navegador/perfil para conservar los datos.
+- El modo sin internet conserva los datos y la cola en el dispositivo donde se generaron; IndexedDB no sincroniza entre equipos. Además, sin Service Worker no se garantiza abrir la aplicación por primera vez sin conexión. En hosting web usá HTTPS; para LAN, publicá `dist/` en un servidor local estable y accedé siempre por la misma URL.
 
 ---
 

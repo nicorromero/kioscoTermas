@@ -1,5 +1,11 @@
 import React, { useState, useMemo, type RefObject } from "react";
-import { Search, Star, Sparkles, UtensilsCrossed, Layers, Barcode, Plus, Pencil } from "lucide-react";
+import {
+  Search,
+  Star,
+  UtensilsCrossed,
+  Plus,
+  Pencil,
+} from "lucide-react";
 import type { Product, ProductCategory, SelectedModifier } from "../types/pos";
 import { formatCurrency } from "../utils/format";
 import { ModifierBar } from "./ModifierBar";
@@ -93,13 +99,7 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
   };
 
   const handleProductClick = (product: Product) => {
-    if (product.modifiers && product.modifiers.length > 0) {
-      // Abrir barra contextual de modificadores
-      setConfiguringProduct(product);
-    } else {
-      // Producto directo sin modificadores
-      onAddToCart(product, []);
-    }
+    onAddToCart(product, []);
   };
 
   return (
@@ -181,7 +181,7 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
         })}
       </div>
 
-      {/* ── Grilla de Productos ── */}
+      {/* ── Lista compacta de Productos ── */}
       <div className="flex-1 overflow-y-auto p-3">
         {filteredProducts.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-2">
@@ -189,106 +189,80 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
             <p className="text-sm">No se encontraron productos en esta categoría o búsqueda.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5">
+          <div className="divide-y divide-slate-800/80 rounded-lg border border-slate-800 overflow-hidden">
             {filteredProducts.map((product) => {
-              const hasMods = product.modifiers && product.modifiers.length > 0;
+              const hasMods = Boolean(product.modifiers?.length);
               const isBeingConfigured = configuringProduct?.id === product.id;
 
               return (
                 <div
                   key={product.id}
-                  onClick={() => handleProductClick(product)}
-                  className={`group relative flex flex-col justify-between p-2.5 rounded-xl border bg-slate-900/90 cursor-pointer select-none transition-all duration-100 hover:scale-[1.01] active:scale-[0.98] ${
+                  className={`group flex h-12 items-center gap-2 border-l-[3px] px-2.5 select-none transition-colors ${
                     isBeingConfigured
-                      ? "ring-2 ring-emerald-500 border-emerald-500 bg-slate-850 shadow-lg shadow-emerald-950"
-                      : "border-slate-800/90 hover:border-slate-700 hover:bg-slate-850/90 shadow-sm"
+                      ? "bg-emerald-950/40"
+                      : "bg-slate-900/70"
                   }`}
+                  style={{ borderLeftColor: product.colorTag || "#10B981" }}
                 >
-                  {/* Etiqueta de color lateral / superior */}
-                  <div
-                    className="absolute top-0 left-0 right-0 h-1 rounded-t-xl opacity-80"
-                    style={{ backgroundColor: product.colorTag || "#10B981" }}
-                  />
-
-                  {/* Cabecera del producto & Botones Acción */}
-                  <div className="flex items-start justify-between gap-1 pt-1">
-                    <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
-                      {product.category}
+                  <button
+                    type="button"
+                    onClick={() => handleProductClick(product)}
+                    aria-label={`Agregar ${product.name}, ${formatCurrency(product.basePrice)}`}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left hover:bg-slate-800/50 focus-visible:outline focus-visible:outline-1 focus-visible:outline-emerald-500"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-xs font-semibold text-white">
+                          {product.name}
+                        </span>
+                        {hasMods && (
+                          <span className="shrink-0 rounded bg-slate-800 px-1 py-0.5 text-[9px] text-emerald-400">
+                            Extras
+                          </span>
+                        )}
+                        {product.isCombo && (
+                          <span className="shrink-0 rounded bg-purple-950 px-1 py-0.5 text-[9px] font-bold text-purple-300">
+                            COMBO
+                          </span>
+                        )}
+                      </span>
+                      <span className="block truncate text-[10px] leading-3 text-slate-500">
+                        {product.shortName && product.shortName !== product.name
+                          ? product.shortName
+                          : product.category}
+                      </span>
                     </span>
-                    <div className="flex items-center gap-0.5 -mr-1 -mt-1">
-                      {onEditProduct && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onEditProduct(product);
-                          }}
-                          className="p-1 text-slate-500 hover:text-emerald-400 transition-colors opacity-70 group-hover:opacity-100"
-                          title="Editar o duplicar producto"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleFavorite(product.id);
-                        }}
-                        className="p-1 text-slate-500 hover:text-amber-400 transition-colors"
-                        title={product.isFavorite ? "Quitar de favoritos" : "Marcar como favorito"}
-                      >
-                        <Star
-                          className={`w-3.5 h-3.5 ${
-                            product.isFavorite ? "text-amber-400 fill-amber-400" : ""
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Nombre y Nombre Corto */}
-                  <div className="my-1.5">
-                    <p className="font-semibold text-xs text-white leading-snug line-clamp-2">
-                      {product.name}
-                    </p>
-                    {product.shortName && product.shortName !== product.name && (
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {product.shortName}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Badges de Combo o Modificadores */}
-                  <div className="flex items-center gap-1 my-1">
-                    {product.isCombo && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-800">
-                        COMBO
-                      </span>
-                    )}
-                    {hasMods && (
-                      <span className="text-[9px] font-medium px-1.5 py-0.2 rounded bg-slate-800 text-emerald-400 border border-slate-700">
-                        +Extras
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Precio y Botón Rápido */}
-                  <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/80 mt-auto">
-                    <span className="font-mono font-bold text-sm text-emerald-400">
+                    <span className="shrink-0 font-mono text-xs font-bold text-emerald-400">
                       {formatCurrency(product.basePrice)}
                     </span>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleProductClick(product);
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleFavorite(product.id);
                       }}
-                      className="w-6 h-6 rounded-md bg-slate-800 hover:bg-emerald-500 hover:text-slate-950 text-slate-300 flex items-center justify-center transition-colors"
-                      title={hasMods ? "Personalizar" : "Agregar directo"}
+                      className="rounded p-1 text-slate-500 hover:text-amber-400"
+                      title={product.isFavorite ? "Quitar de favoritos" : "Marcar como favorito"}
+                      aria-label={product.isFavorite ? "Quitar de favoritos" : "Marcar como favorito"}
                     >
-                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <Star className={`h-3.5 w-3.5 ${product.isFavorite ? "fill-amber-400 text-amber-400" : ""}`} />
                     </button>
+                    {onEditProduct && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onEditProduct(product);
+                        }}
+                        className="rounded p-1 text-slate-500 hover:text-emerald-400"
+                        title="Editar producto"
+                        aria-label={`Editar ${product.name}`}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -311,6 +285,7 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
         isOpen={isProductDrawerOpen}
         product={drawerTargetProduct}
         onClose={onCloseProductDrawer}
+        onRequestEditProduct={onEditProduct}
       />
     </section>
   );

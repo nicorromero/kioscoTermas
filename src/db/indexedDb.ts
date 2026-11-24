@@ -18,6 +18,7 @@ export interface SettingRecord {
 class PosDatabase extends Dexie {
   products!: Table<Product, string>;
   sales!: Table<Sale, string>;
+  paymentHistory!: Table<Sale, string>;
   invoices!: Table<Invoice, string>;
   settings!: Table<SettingRecord, string>;
 
@@ -37,6 +38,14 @@ class PosDatabase extends Dexie {
     this.version(3).stores({
       products: "id, [businessId+branchId], [businessId+branchId+category], category, barcode",
       sales: "id, [businessId+branchId], [businessId+branchId+status], status, createdAt",
+      invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
+      settings: "key",
+    });
+
+    this.version(4).stores({
+      products: "id, [businessId+branchId], [businessId+branchId+category], category, barcode",
+      sales: "id, [businessId+branchId], [businessId+branchId+status], status, createdAt",
+      paymentHistory: "id, [businessId+branchId]",
       invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
       settings: "key",
     });
@@ -357,6 +366,40 @@ export function getQueuedSales(
     .equals([businessId, branchId])
     .and((s) => s.status === "PENDIENTE_PAGO" || s.status === "PAGO_RECHAZADO")
     .toArray();
+}
+
+export async function getPaymentHistory(
+  businessId: string,
+  branchId: string,
+): Promise<Sale[]> {
+  const history = await db.paymentHistory
+    .where("[businessId+branchId]")
+    .equals([businessId, branchId])
+    .toArray();
+
+  return history
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 3);
+}
+
+export async function addPaymentHistory(sale: Sale): Promise<void> {
+  await db.transaction("rw", db.paymentHistory, async () => {
+    await db.paymentHistory.put(sale);
+    const history = await db.paymentHistory
+      .where("[businessId+branchId]")
+      .equals([sale.businessId, sale.branchId])
+      .toArray();
+    history.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    await db.paymentHistory.bulkDelete(
+      history.slice(3).map((entry) => entry.id),
+    );
+  });
+}
+
+export async function updatePaymentHistory(sale: Sale): Promise<void> {
+  if (await db.paymentHistory.get(sale.id)) {
+    await db.paymentHistory.put(sale);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════

@@ -12,38 +12,46 @@ import {
 } from "lucide-react";
 import type { CartItem, Product, SelectedModifier } from "../types/pos";
 import { formatCurrency } from "../utils/format";
+import { ModifierBar } from "./ModifierBar";
 
 interface CartColumnProps {
   cart: CartItem[];
   cartTotal: number;
   cartDiscount: number;
-  lastActiveLineKey: string | null;
+  selectedLineKey: string | null;
   productsMap: Map<string, Product>;
+  onSelectLine: (lineKey: string | null) => void;
   onUpdateQty: (lineKey: string, delta: number) => void;
   onRemoveItem: (lineKey: string) => void;
   onClearCart: () => void;
   onSetDiscount: (amount: number) => void;
   onOpenCheckout: () => void;
   onQuickCash: () => void;
-  onEditModifiers: (product: Product, currentModifiers: SelectedModifier[]) => void;
+  onChangeModifiers: (
+    lineKey: string,
+    product: Product,
+    modifiers: SelectedModifier[],
+  ) => void;
 }
 
 export const CartColumn: React.FC<CartColumnProps> = ({
   cart,
   cartTotal,
   cartDiscount,
-  lastActiveLineKey,
+  selectedLineKey,
   productsMap,
+  onSelectLine,
   onUpdateQty,
   onRemoveItem,
   onClearCart,
   onSetDiscount,
   onOpenCheckout,
   onQuickCash,
-  onEditModifiers,
+  onChangeModifiers,
 }) => {
   const [showDiscountInput, setShowDiscountInput] = useState(false);
   const [discountVal, setDiscountVal] = useState(cartDiscount.toString());
+  const [showModifierEditor, setShowModifierEditor] = useState(false);
 
   const totalUnits = cart.reduce((sum, i) => sum + i.qty, 0);
   const finalTotal = Math.max(0, cartTotal - cartDiscount);
@@ -52,6 +60,15 @@ export const CartColumn: React.FC<CartColumnProps> = ({
     const num = parseFloat(discountVal) || 0;
     onSetDiscount(num);
     setShowDiscountInput(false);
+  };
+
+  const handleLineClick = (lineKey: string) => {
+    if (lineKey === selectedLineKey) {
+      onUpdateQty(lineKey, 1);
+      return;
+    }
+    setShowModifierEditor(false);
+    onSelectLine(lineKey);
   };
 
   return (
@@ -94,15 +111,29 @@ export const CartColumn: React.FC<CartColumnProps> = ({
           </div>
         ) : (
           cart.map((item) => {
-            const isLastActive = item.lineKey === lastActiveLineKey;
+            const isSelected = item.lineKey === selectedLineKey;
             const originalProduct = productsMap.get(item.productId);
+            const hasModifiers = Boolean(originalProduct?.modifiers?.length);
 
             return (
               <div
                 key={item.lineKey}
-                className={`p-2.5 rounded-lg border transition-all ${
-                  isLastActive
-                    ? "bg-slate-850 border-emerald-500/70 shadow-sm shadow-emerald-950/40"
+                role="button"
+                tabIndex={0}
+                onClick={() => handleLineClick(item.lineKey)}
+                onKeyDown={(event) => {
+                  if (
+                    event.target === event.currentTarget &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    handleLineClick(item.lineKey);
+                  }
+                }}
+                aria-label={`${item.name}, cantidad ${item.qty}, subtotal ${formatCurrency(item.subtotal)}`}
+                className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
+                  isSelected
+                    ? "bg-slate-850 border-emerald-400 ring-1 ring-emerald-500/60 shadow-sm shadow-emerald-950/40"
                     : "bg-slate-900 border-slate-800 hover:border-slate-700"
                 }`}
               >
@@ -113,9 +144,9 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                       <p className="font-semibold text-xs text-white truncate">
                         {item.name}
                       </p>
-                      {isLastActive && (
+                      {isSelected && (
                         <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 shrink-0">
-                          Activo [+/-]
+                          Seleccionado [+/-]
                         </span>
                       )}
                     </div>
@@ -148,48 +179,76 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                   </div>
                 )}
 
-                {/* Controles de Cantidad y Acciones */}
-                <div className="mt-2 flex items-center justify-between pt-1 border-t border-slate-800/40">
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => onUpdateQty(item.lineKey, -1)}
-                      className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
-                      title="Disminuir (-)"
-                    >
-                      <Minus className="w-3 h-3" />
-                    </button>
-                    <span className="font-mono font-bold text-xs text-white px-2 min-w-6 text-center">
-                      {item.qty}
-                    </span>
-                    <button
-                      onClick={() => onUpdateQty(item.lineKey, 1)}
-                      className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
-                      title="Aumentar (+)"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    {originalProduct && originalProduct.modifiers && originalProduct.modifiers.length > 0 && (
+                {/* Controles visibles al seleccionar la línea */}
+                {isSelected && (
+                  <div
+                    className="mt-2 flex items-center justify-between pt-1 border-t border-slate-800/40"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="flex items-center gap-1">
                       <button
-                        onClick={() => onEditModifiers(originalProduct, item.selectedModifiers)}
-                        className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1"
-                        title="Modificar extras"
+                        type="button"
+                        onClick={() => onUpdateQty(item.lineKey, -1)}
+                        className="w-6 h-6 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
+                        title="Disminuir (-)"
                       >
-                        <Edit2 className="w-3 h-3" />
-                        <span>Editar</span>
+                        <Minus className="w-3 h-3" />
                       </button>
-                    )}
-                    <button
-                      onClick={() => onRemoveItem(item.lineKey)}
-                      className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
-                      title="Eliminar ítem"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => onUpdateQty(item.lineKey, 1)}
+                        className="font-mono font-bold text-xs text-white px-2 min-w-6 text-center rounded hover:bg-slate-800"
+                        title="Aumentar cantidad (+1)"
+                      >
+                        {item.qty}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onUpdateQty(item.lineKey, 1)}
+                        className="rounded bg-slate-800 px-1.5 h-6 hover:bg-slate-700 text-slate-300 flex items-center gap-1 transition-colors"
+                        title="Aumentar (+1)"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span className="text-[10px]">+1</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {hasModifiers && originalProduct && (
+                        <button
+                          type="button"
+                          onClick={() => setShowModifierEditor((show) => !show)}
+                          className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1"
+                          aria-expanded={showModifierEditor}
+                          title="Modificar extras"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          <span>Extras</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => onRemoveItem(item.lineKey)}
+                        className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                        title="Eliminar ítem"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {isSelected && showModifierEditor && hasModifiers && originalProduct && (
+                  <ModifierBar
+                    product={originalProduct}
+                    mode="edit"
+                    initialModifiers={item.selectedModifiers}
+                    onClose={() => setShowModifierEditor(false)}
+                    onChangeModifiers={(modifiers) =>
+                      onChangeModifiers(item.lineKey, originalProduct, modifiers)
+                    }
+                  />
+                )}
               </div>
             );
           })

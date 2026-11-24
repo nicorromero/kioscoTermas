@@ -1,73 +1,95 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Check, X, Plus, Sparkles, Utensils } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Check, X, Plus, Utensils } from "lucide-react";
 import type { Product, ModifierOption, SelectedModifier } from "../types/pos";
 import { formatCurrency } from "../utils/format";
 
 interface ModifierBarProps {
   product: Product | null;
   onClose: () => void;
-  onAddToCart: (product: Product, modifiers: SelectedModifier[]) => void;
+  onAddToCart?: (product: Product, modifiers: SelectedModifier[]) => void;
+  mode?: "add" | "edit";
+  initialModifiers?: SelectedModifier[];
+  onChangeModifiers?: (modifiers: SelectedModifier[]) => void;
 }
 
 export const ModifierBar: React.FC<ModifierBarProps> = ({
   product,
   onClose,
   onAddToCart,
+  mode = "add",
+  initialModifiers,
+  onChangeModifiers,
 }) => {
   const [selectedMods, setSelectedMods] = useState<Record<string, ModifierOption>>({});
 
-  // Al cambiar de producto, resetear selección con los defaults (ej: si tiene modificadores exclusivos obligatorios como Con Agua)
+  // En el carrito, la selección es controlada por la línea para recalcular al instante.
+  const selectedModsForView: Record<string, ModifierOption> =
+    mode === "edit" && product
+      ? Object.fromEntries(
+          (initialModifiers ?? [])
+            .map((selected) => {
+              const option = product.modifiers?.find(
+                (modifier) => modifier.id === selected.modifierId,
+              );
+              return option ? [option.id, option] : null;
+            })
+            .filter(
+              (option): option is [string, ModifierOption] => option !== null,
+            ),
+        )
+      : selectedMods;
+
   useEffect(() => {
-    if (!product || !product.modifiers || product.modifiers.length === 0) {
-      setSelectedMods({});
-      return;
+    const initial: Record<string, ModifierOption> = {};
+    if (product?.modifiers) {
+      const exclusiveGroups = new Set(
+        product.modifiers
+          .filter((modifier) => modifier.exclusive && modifier.group)
+          .map((modifier) => modifier.group!),
+      );
+
+      exclusiveGroups.forEach((group) => {
+        const firstInGroup = product.modifiers?.find(
+          (modifier) => modifier.group === group,
+        );
+        if (firstInGroup) initial[firstInGroup.id] = firstInGroup;
+      });
     }
 
-    const initial: Record<string, ModifierOption> = {};
-    // Pre-seleccionar primera opción de cada grupo exclusivo (ej: "Con Agua" en licuados, "Chico" en café)
-    const exclusiveGroups = new Set(
-      product.modifiers.filter((m) => m.exclusive && m.group).map((m) => m.group!)
-    );
-
-    exclusiveGroups.forEach((group) => {
-      const firstInGroup = product.modifiers?.find((m) => m.group === group);
-      if (firstInGroup) {
-        initial[firstInGroup.id] = firstInGroup;
-      }
-    });
-
     setSelectedMods(initial);
-  }, [product]);
+  }, [product?.id, mode]);
 
   if (!product) return null;
 
   const toggleModifier = (mod: ModifierOption) => {
-    setSelectedMods((prev) => {
-      const next = { ...prev };
-      const isCurrentlySelected = !!next[mod.id];
+    const next = { ...selectedModsForView };
+    const isCurrentlySelected = !!next[mod.id];
 
-      if (mod.exclusive && mod.group) {
-        // Deseleccionar cualquier otro del mismo grupo
-        Object.keys(next).forEach((id) => {
-          if (next[id].group === mod.group) {
-            delete next[id];
-          }
-        });
-        if (!isCurrentlySelected) {
-          next[mod.id] = mod;
-        }
-      } else {
-        if (isCurrentlySelected) {
-          delete next[mod.id];
-        } else {
-          next[mod.id] = mod;
-        }
-      }
-      return next;
-    });
+    if (mod.exclusive && mod.group) {
+      Object.keys(next).forEach((id) => {
+        if (next[id].group === mod.group) delete next[id];
+      });
+      if (!isCurrentlySelected) next[mod.id] = mod;
+    } else if (isCurrentlySelected) {
+      delete next[mod.id];
+    } else {
+      next[mod.id] = mod;
+    }
+
+    if (mode === "edit") {
+      onChangeModifiers?.(
+        Object.values(next).map((modifier) => ({
+          modifierId: modifier.id,
+          name: modifier.name,
+          priceDelta: modifier.priceDelta,
+        })),
+      );
+    } else {
+      setSelectedMods(next);
+    }
   };
 
-  const selectedArray: SelectedModifier[] = Object.values(selectedMods).map((m) => ({
+  const selectedArray: SelectedModifier[] = Object.values(selectedModsForView).map((m) => ({
     modifierId: m.id,
     name: m.name,
     priceDelta: m.priceDelta,
@@ -78,9 +100,55 @@ export const ModifierBar: React.FC<ModifierBarProps> = ({
     selectedArray.reduce((acc, m) => acc + m.priceDelta, 0);
 
   const handleConfirm = () => {
-    onAddToCart(product, selectedArray);
+    onAddToCart?.(product, selectedArray);
     onClose();
   };
+
+  if (mode === "edit") {
+    return (
+      <div
+        className="mt-2 rounded-md border border-slate-700 bg-slate-950/80 p-2"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Extras · {formatCurrency(finalUnitPrice)} c/u
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-white"
+          >
+            Listo
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {product.modifiers?.map((mod) => {
+            const isSelected = !!selectedModsForView[mod.id];
+            return (
+              <button
+                key={mod.id}
+                type="button"
+                onClick={() => toggleModifier(mod)}
+                aria-pressed={isSelected}
+                className={`rounded border px-1.5 py-1 text-[10px] transition-colors ${
+                  isSelected
+                    ? "border-emerald-500 bg-emerald-950 text-emerald-300"
+                    : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+                }`}
+              >
+                {isSelected ? "✓ " : ""}
+                {mod.name}
+                {mod.priceDelta > 0
+                  ? ` +${formatCurrency(mod.priceDelta)}`
+                  : ""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-slate-900 border-t-2 border-emerald-500/80 p-3 shadow-2xl shrink-0 flex flex-col gap-2.5 animate-in slide-in-from-bottom duration-150">

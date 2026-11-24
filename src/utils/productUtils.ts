@@ -7,6 +7,7 @@ import type {
   ProductCategory,
   ProductFormData,
   ModifierOption,
+  ComboInclude,
 } from "../types/pos";
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -17,6 +18,7 @@ export const PRESET_SANDWICH_EXTRAS: ModifierOption[] = [
   { id: "mod-jyq", name: "+ Jamón y Queso", priceDelta: 2000, group: "extras" },
   { id: "mod-tyl", name: "+ Tomate y Lechuga", priceDelta: 3000, group: "extras" },
   { id: "mod-completa", name: "Completa", priceDelta: 5000, group: "extras" },
+  { id: "mod-tostado", name: "Tostado", priceDelta: 0, group: "coccion" },
   { id: "mod-huevo", name: "+ Huevo Frito", priceDelta: 1500, group: "extras" },
   { id: "mod-bacon", name: "+ Bacon", priceDelta: 2500, group: "extras" },
   { id: "mod-cheddar", name: "+ Cheddar", priceDelta: 1500, group: "extras" },
@@ -73,6 +75,33 @@ export const MODIFIER_PRESETS: Record<string, ModifierPresetDef> = {
     modifiers: PRESET_CAFE_SIZE,
   },
 };
+
+export type ProductPresetType = "SANDWICH" | "COMBO";
+
+export type ProductPreset =
+  | { modifiers: ModifierOption[]; isCombo?: false; comboIncludes?: undefined }
+  | { modifiers?: undefined; isCombo: true; comboIncludes: ComboInclude[] };
+
+export function applyProductPreset(presetType: ProductPresetType): ProductPreset {
+  if (presetType === "SANDWICH") {
+    return {
+      modifiers: PRESET_SANDWICH_EXTRAS.map((modifier) => ({ ...modifier })),
+    };
+  }
+
+  return {
+    isCombo: true,
+    comboIncludes: [
+      {
+        productId: "sand-milacarne",
+        qty: 1,
+        label: "Sándwich de Milanesa de Carne",
+      },
+      { productId: "var-papachico", qty: 1, label: "Papas Fritas Cono Chico" },
+      { productId: "beb-coca500", qty: 1, label: "Coca-Cola 500 ml" },
+    ],
+  };
+}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    2. Generación de IDs limpios
@@ -167,6 +196,79 @@ export function normalizeBarcode(barcode?: string | null): string {
   if (!barcode) return "";
   // Remover caracteres de control ASCII (0-31 y 127) y espacios en blanco
   return barcode.replace(/[\x00-\x1F\x7F\s]+/g, "").trim();
+}
+
+export interface ProductNormalizationContext {
+  businessId: string;
+  branchId: string;
+  existingProducts: readonly Product[];
+}
+
+function normalizeWhitespace(value?: string): string {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+export function normalizeProductDraft(
+  draft: ProductFormData,
+  context: ProductNormalizationContext,
+): Product {
+  const name = normalizeWhitespace(draft.name);
+  const shortName = normalizeWhitespace(draft.shortName) || generateShortName(name);
+  const existingIds = new Set(context.existingProducts.map((product) => product.id));
+  const requestedId =
+    draft.id || generateProductId(draft.category, name || "producto");
+  let id = requestedId;
+
+  if (!draft.id) {
+    let suffix = 2;
+    while (existingIds.has(id)) {
+      id = `${requestedId}-${suffix}`;
+      suffix += 1;
+    }
+  }
+
+  const barcode = normalizeBarcode(draft.barcode);
+  return {
+    ...draft,
+    id,
+    businessId: context.businessId,
+    branchId: context.branchId,
+    name,
+    shortName,
+    barcode: barcode || undefined,
+  };
+}
+
+export function validateProductDraft(
+  draft: ProductFormData | Product,
+  existingProducts: readonly Product[],
+): string[] {
+  const errors: string[] = [];
+  if (!normalizeWhitespace(draft.name)) {
+    errors.push("El nombre del producto es obligatorio.");
+  }
+  if (!Number.isFinite(draft.basePrice) || draft.basePrice < 0) {
+    errors.push("El precio base debe ser mayor o igual a $0.");
+  }
+
+  const barcode = normalizeBarcode(draft.barcode);
+  if (barcode) {
+    const businessId = "businessId" in draft ? draft.businessId : undefined;
+    const branchId = "branchId" in draft ? draft.branchId : undefined;
+    const duplicate = existingProducts.find(
+      (product) =>
+        product.id !== draft.id &&
+        product.barcode &&
+        normalizeBarcode(product.barcode) === barcode &&
+        (businessId === undefined || product.businessId === businessId) &&
+        (branchId === undefined || product.branchId === branchId),
+    );
+    if (duplicate) {
+      errors.push("Código de barras ya asignado a otro producto.");
+    }
+  }
+
+  return errors;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════

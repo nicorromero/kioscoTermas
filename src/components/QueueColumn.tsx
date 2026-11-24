@@ -9,6 +9,9 @@ import {
   RefreshCw,
   AlertCircle,
   ChevronDown,
+  ChevronLeft,
+  History,
+  RotateCcw,
   Trash2,
 } from "lucide-react";
 import type { Sale, PaymentMethod } from "../types/pos";
@@ -16,6 +19,10 @@ import { formatCurrency, formatElapsedTime } from "../utils/format";
 
 interface QueueColumnProps {
   queue: Sale[];
+  paymentHistory: Sale[];
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
+  onRecover: (saleId: string) => void;
   onMarkPaid: (saleId: string) => void;
   onMarkRejected: (saleId: string) => void;
   onRetry: (saleId: string, method: PaymentMethod) => void;
@@ -24,6 +31,10 @@ interface QueueColumnProps {
 
 export const QueueColumn: React.FC<QueueColumnProps> = ({
   queue,
+  paymentHistory,
+  isExpanded,
+  onToggleExpanded,
+  onRecover,
   onMarkPaid,
   onMarkRejected,
   onRetry,
@@ -60,6 +71,38 @@ export const QueueColumn: React.FC<QueueColumnProps> = ({
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
+  if (!isExpanded) {
+    const rejectedCount = queue.filter(
+      (sale) => sale.status === "PAGO_RECHAZADO",
+    ).length;
+
+    return (
+      <aside className="w-12 flex flex-col h-full bg-slate-950 shrink-0 select-none border-l border-slate-800">
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-label={`Abrir cola de pagos, ${queue.length} en espera, ${rejectedCount} rechazados`}
+          title="Abrir cola de pagos"
+          className="relative flex-1 flex flex-col items-center gap-3 pt-4 text-slate-300 hover:bg-slate-900 transition-colors"
+        >
+          <ChevronLeft className="w-4 h-4 text-slate-400" />
+          <Clock className="w-5 h-5 text-purple-400" />
+          <span className="text-[10px] font-mono [writing-mode:vertical-rl]">
+            Cola de pagos
+          </span>
+          {queue.length > 0 && (
+            <span className="absolute top-12 right-1 min-w-5 px-1 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold">
+              {queue.length}
+            </span>
+          )}
+          {rejectedCount > 0 && (
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+          )}
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="w-72 lg:w-80 flex flex-col h-full bg-slate-950 shrink-0 select-none border-l border-slate-800">
       {/* ── Cabecera de la Cola ── */}
@@ -69,21 +112,32 @@ export const QueueColumn: React.FC<QueueColumnProps> = ({
           <h2 className="font-bold text-sm text-white">Cola de Pagos</h2>
         </div>
 
-        <span
-          className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full border ${
-            queue.length > 0
-              ? "bg-amber-950 text-amber-300 border-amber-800 animate-pulse"
-              : "bg-slate-800 text-slate-400 border-slate-700"
-          }`}
-        >
-          {queue.length} en espera
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full border ${
+              queue.length > 0
+                ? "bg-amber-950 text-amber-300 border-amber-800 animate-pulse"
+                : "bg-slate-800 text-slate-400 border-slate-700"
+            }`}
+          >
+            {queue.length} en espera
+          </span>
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            aria-label="Minimizar cola de pagos"
+            title="Minimizar cola de pagos"
+            className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* ── Lista de Tarjetas en Cola ── */}
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
         {queue.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-2 p-4 text-center">
+          <div className="min-h-36 flex flex-col items-center justify-center text-slate-500 gap-2 p-4 text-center">
             <CheckCircle2 className="w-9 h-9 text-slate-600 stroke-1" />
             <p className="text-xs font-medium text-slate-400">
               No hay pagos en espera
@@ -257,6 +311,65 @@ export const QueueColumn: React.FC<QueueColumnProps> = ({
             );
           })
         )}
+
+        <section className="pt-3 border-t border-slate-800">
+          <h3 className="flex items-center gap-2 text-xs font-bold text-slate-300 mb-2">
+            <History className="w-3.5 h-3.5 text-cyan-400" />
+            Últimos pedidos enviados
+          </h3>
+          {paymentHistory.length === 0 ? (
+            <p className="text-[11px] text-slate-500">
+              Los pedidos enviados a cobrar aparecerán acá.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {paymentHistory.map((sale) => (
+                <article
+                  key={sale.id}
+                  className="p-2.5 rounded-lg bg-slate-900 border border-slate-800"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400">
+                      {new Date(sale.createdAt).toLocaleString()}
+                    </span>
+                    <span
+                      className={`text-[9px] uppercase font-bold ${
+                        sale.status === "PAGO_RECHAZADO"
+                          ? "text-rose-300"
+                          : sale.status === "CANCELADA"
+                            ? "text-slate-500"
+                            : sale.status === "PAGADA"
+                              ? "text-emerald-400"
+                              : "text-amber-300"
+                      }`}
+                    >
+                      {sale.status.replace("_", " ")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-xs font-bold text-white">
+                      {formatCurrency(sale.total)}
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {sale.items.reduce((sum, item) => sum + item.qty, 0)} ítems
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-400 line-clamp-1">
+                    {sale.items.map((item) => item.name).join(" • ")}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onRecover(sale.id)}
+                    className="w-full mt-2 py-1.5 px-2 rounded-md bg-cyan-950/70 hover:bg-cyan-900 text-cyan-200 border border-cyan-800/70 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Recuperar al carrito
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
     </aside>
   );

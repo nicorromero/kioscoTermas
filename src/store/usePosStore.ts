@@ -11,7 +11,6 @@ import type {
   CartItem,
   SelectedModifier,
   Sale,
-  SaleStatus,
   PaymentMethod,
   Invoice,
   InvoiceType,
@@ -26,6 +25,9 @@ import {
   getSale,
   putSale,
   getQueuedSales,
+  getPaymentHistory,
+  addPaymentHistory,
+  updatePaymentHistory,
   getCompletedSales,
   getInvoices,
   putInvoice,
@@ -38,9 +40,9 @@ import {
   deleteProduct,
 } from "../db/indexedDb";
 import {
-  generateProductId,
-  normalizeBarcode,
   cloneProductData,
+  normalizeProductDraft,
+  validateProductDraft,
 } from "../utils/productUtils";
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -97,6 +99,16 @@ function recalcCartTotal(cart: CartItem[]): number {
   return cart.reduce((sum, item) => sum + item.subtotal, 0);
 }
 
+function updateRecentPaymentHistory(history: Sale[], sale: Sale): Sale[] {
+  return [sale, ...history.filter((entry) => entry.id !== sale.id)]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 3);
+}
+
+function replacePaymentHistoryEntry(history: Sale[], sale: Sale): Sale[] {
+  return history.map((entry) => (entry.id === sale.id ? sale : entry));
+}
+
 /* ══════════════════════════════════════════════════════════════════════════════
    State shape
    ══════════════════════════════════════════════════════════════════════════════ */
@@ -109,15 +121,19 @@ export interface PosState {
   // ── Catálogo ──
   products: Product[];
   productsMap: Map<string, Product>;
+  lastProductId: string | null;
   catalogReady: boolean;
 
   // ── Carrito activo (BORRADOR) ──
   cart: CartItem[];
   cartTotal: number;
   cartDiscount: number;
+  selectedLineKey: string | null;
+  draftId: string;
 
   // ── Cola de ventas en mostrador ──
   queue: Sale[];
+  paymentHistory: Sale[];
 
   // ── Ventas completadas & Comprobantes ──
   completedSales: Sale[];
@@ -131,6 +147,7 @@ export interface PosState {
 
   // ── Acciones: carrito ──
   addToCart: (product: Product, modifiers?: SelectedModifier[]) => void;
+  selectCartLine: (lineKey: string | null) => void;
   removeFromCart: (lineKey: string) => void;
   updateQty: (lineKey: string, delta: number) => void;
   setQty: (lineKey: string, qty: number) => void;
@@ -141,6 +158,7 @@ export interface PosState {
   ) => void;
   setCartDiscount: (amount: number) => void;
   clearCart: () => void;
+  recoverSaleToCart: (saleId: string) => string | null;
 
   // ── Acciones: ventas / cola ──
   submitSale: (
@@ -178,6 +196,7 @@ export interface PosState {
   toggleFavorite: (productId: string) => Promise<void>;
   upsertProduct: (formData: ProductFormData, productId?: string) => Promise<Product>;
   duplicateProduct: (sourceId: string, newName?: string) => Promise<Product>;
+  duplicateLastProduct: () => Promise<Product>;
   removeProduct: (productId: string) => Promise<void>;
 }
 
@@ -205,11 +224,15 @@ export const usePosStore = create<PosState>()(
     branchId: DEFAULT_BRANCH,
     products: seedProducts,
     productsMap: initialProductsMap,
+    lastProductId: null,
     catalogReady: true,
     cart: [],
     cartTotal: 0,
     cartDiscount: 0,
+    selectedLineKey: null,
+    draftId: generateSaleId(),
     queue: [],
+    paymentHistory: [],
     completedSales: [],
     invoices: [],
     isOffline: initialOfflineSetting,
@@ -232,6 +255,7 @@ export const usePosStore = create<PosState>()(
 
         // 3. Cargar cola de ventas pendientes (PENDIENTE_PAGO / PAGO_RECHAZADO)
         const queue = await getQueuedSales(biz, branch);
+        const paymentHistory = await getPaymentHistory(biz, branch);
 
         // 4. Cargar ventas completadas y comprobantes
         const completedSales = await getCompletedSales(biz, branch);
@@ -239,14 +263,19 @@ export const usePosStore = create<PosState>()(
 
         // 5. Cargar estado de simulación offline persistido
         const isOffline = await getSetting("offlineMode", initialOfflineSetting);
+        const savedLastProductId = await getSetting<string | null>("lastProductId", null);
 
         set({
           businessId: biz,
           branchId: branch,
           products: products.length > 0 ? products : seedProducts,
           productsMap: products.length > 0 ? productsMap : initialProductsMap,
+          lastProductId: products.some((product) => product.id === savedLastProductId)
+            ? savedLastProductId
+            : null,
           catalogReady: true,
           queue,
+          paymentHistory,
           completedSales,
           invoices,
           isOffline,
@@ -258,6 +287,7 @@ export const usePosStore = create<PosState>()(
           branchId: branch,
           products: seedProducts,
           productsMap: initialProductsMap,
+          lastProductId: null,
           catalogReady: true,
         });
       }
@@ -299,14 +329,31 @@ export const usePosStore = create<PosState>()(
           newCart = [...state.cart, item];
         }
 
-        return { cart: newCart, cartTotal: recalcCartTotal(newCart) };
+        return {
+          cart: newCart,
+          cartTotal: recalcCartTotal(newCart),
+        };
       });
+    },
+
+    selectCartLine: (lineKey) => {
+      set((state) => ({
+        selectedLineKey:
+          lineKey && state.cart.some((item) => item.lineKey === lineKey)
+            ? lineKey
+            : null,
+      }));
     },
 
     removeFromCart: (lineKey) => {
       set((state) => {
         const newCart = state.cart.filter((i) => i.lineKey !== lineKey);
-        return { cart: newCart, cartTotal: recalcCartTotal(newCart) };
+        return {
+          cart: newCart,
+          cartTotal: recalcCartTotal(newCart),
+          selectedLineKey:
+            state.selectedLineKey === lineKey ? null : state.selectedLineKey,
+        };
       });
     },
 
@@ -325,7 +372,13 @@ export const usePosStore = create<PosState>()(
           })
           .filter(Boolean) as CartItem[];
 
-        return { cart: newCart, cartTotal: recalcCartTotal(newCart) };
+        return {
+          cart: newCart,
+          cartTotal: recalcCartTotal(newCart),
+          selectedLineKey: newCart.some((item) => item.lineKey === lineKey)
+            ? lineKey
+            : null,
+        };
       });
     },
 
@@ -340,7 +393,11 @@ export const usePosStore = create<PosState>()(
             ? { ...i, qty, subtotal: qty * i.unitFinalPrice }
             : i,
         );
-        return { cart: newCart, cartTotal: recalcCartTotal(newCart) };
+        return {
+          cart: newCart,
+          cartTotal: recalcCartTotal(newCart),
+          selectedLineKey: lineKey,
+        };
       });
     },
 
@@ -387,16 +444,50 @@ export const usePosStore = create<PosState>()(
           );
         }
 
-        return { cart: newCart, cartTotal: recalcCartTotal(newCart) };
+        return {
+          cart: newCart,
+          cartTotal: recalcCartTotal(newCart),
+          selectedLineKey: newCart.some((item) => item.lineKey === newLineKey)
+            ? newLineKey
+            : null,
+        };
       });
     },
 
     setCartDiscount: (amount) => {
-      set({ cartDiscount: Math.max(0, amount) });
+      set((state) => ({
+        cartDiscount: Math.min(
+          state.cartTotal,
+          Math.max(0, Number.isFinite(amount) ? amount : 0),
+        ),
+      }));
     },
 
     clearCart: () => {
-      set({ cart: [], cartTotal: 0, cartDiscount: 0 });
+      set({
+        cart: [],
+        cartTotal: 0,
+        cartDiscount: 0,
+        selectedLineKey: null,
+        draftId: generateSaleId(),
+      });
+    },
+
+    recoverSaleToCart: (saleId) => {
+      const sale = get().paymentHistory.find((entry) => entry.id === saleId);
+      if (!sale) return null;
+
+      const cart = structuredClone(sale.items);
+      const cartTotal = recalcCartTotal(cart);
+      const draftId = generateSaleId();
+      set({
+        cart,
+        cartTotal,
+        cartDiscount: Math.min(sale.discount, cartTotal),
+        selectedLineKey: cart[0]?.lineKey ?? null,
+        draftId,
+      });
+      return draftId;
     },
 
     /* ════════════════════════════════════════════════════════════════════════
@@ -410,18 +501,43 @@ export const usePosStore = create<PosState>()(
       customer,
       cashReceived,
     ) => {
-      const { cart, cartTotal, cartDiscount, businessId, branchId, isOffline } = get();
+      const {
+        cart,
+        cartTotal,
+        cartDiscount,
+        draftId,
+        businessId,
+        branchId,
+        isOffline,
+      } = get();
       if (cart.length === 0) throw new Error("El carrito está vacío");
 
       const timestamp = now();
       const total = Math.max(0, cartTotal - cartDiscount);
+
+      if (!Number.isFinite(total) || cartDiscount > cartTotal) {
+        throw new Error("El descuento no puede superar el subtotal");
+      }
+
+      if (
+        paymentMethod === "EFECTIVO" &&
+        cashReceived !== undefined &&
+        (!Number.isFinite(cashReceived) || cashReceived < total)
+      ) {
+        throw new Error("El monto recibido no cubre el total");
+      }
+
+      const change =
+        paymentMethod === "EFECTIVO" && cashReceived !== undefined
+          ? Math.max(0, cashReceived - total)
+          : undefined;
 
       const resolvedCustomer: FiscalCustomer =
         customer || (invoiceType === "FACTURA_B"
           ? { businessName: "Consumidor Final", taxCondition: "CONSUMIDOR_FINAL" }
           : { businessName: "Responsable Inscripto", taxCondition: "RESPONSABLE_INSCRIPTO" });
 
-      const saleId = generateSaleId();
+      const saleId = draftId;
 
       const sale: Sale = {
         id: saleId,
@@ -433,6 +549,9 @@ export const usePosStore = create<PosState>()(
         subtotal: cartTotal,
         discount: cartDiscount,
         total,
+        cashReceived:
+          paymentMethod === "EFECTIVO" ? cashReceived : undefined,
+        change,
         notes,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -445,11 +564,14 @@ export const usePosStore = create<PosState>()(
         cart: [],
         cartTotal: 0,
         cartDiscount: 0,
+        selectedLineKey: null,
+        draftId: generateSaleId(),
         queue: [...state.queue, sale],
+        paymentHistory: updateRecentPaymentHistory(state.paymentHistory, sale),
       }));
 
       // 2. Persistir en IndexedDB en segundo plano
-      await putSale(sale);
+      await Promise.all([putSale(sale), addPaymentHistory(sale)]);
 
       return sale;
     },
@@ -477,6 +599,15 @@ export const usePosStore = create<PosState>()(
           ? { businessName: "Consumidor Final", taxCondition: "CONSUMIDOR_FINAL" }
           : { businessName: "Responsable Inscripto", taxCondition: "RESPONSABLE_INSCRIPTO" });
 
+      const cashReceived =
+        existing.paymentMethod === "EFECTIVO"
+          ? existing.cashReceived ?? existing.total
+          : undefined;
+      const change =
+        existing.paymentMethod === "EFECTIVO"
+          ? Math.max(0, cashReceived! - existing.total)
+          : undefined;
+
       const updatedSale: Sale = {
         ...existing,
         status: "PAGADA",
@@ -485,6 +616,8 @@ export const usePosStore = create<PosState>()(
         fiscalStatus,
         cae,
         customer,
+        cashReceived,
+        change,
         updatedAt: timestamp,
         closedAt: timestamp,
       };
@@ -522,88 +655,126 @@ export const usePosStore = create<PosState>()(
         queue: state.queue.filter((s) => s.id !== saleId),
         completedSales: [updatedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
         invoices: [invoice, ...state.invoices.filter((i) => i.saleId !== saleId)],
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
+        ),
       }));
 
       // Persistir en IndexedDB
-      await putSale(updatedSale);
-      await putInvoice(invoice);
+      await Promise.all([
+        putSale(updatedSale),
+        putInvoice(invoice),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     markSaleRejected: async (saleId) => {
       const timestamp = now();
+      const existing =
+        get().queue.find((sale) => sale.id === saleId) ||
+        (await getSale(saleId));
+      if (!existing) return;
+
+      const updatedSale: Sale = {
+        ...existing,
+        status: "PAGO_RECHAZADO",
+        updatedAt: timestamp,
+      };
       set((state) => ({
         queue: state.queue.map((s) =>
-          s.id === saleId
-            ? { ...s, status: "PAGO_RECHAZADO" as SaleStatus, updatedAt: timestamp }
-            : s,
+          s.id === saleId ? updatedSale : s,
+        ),
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
         ),
       }));
 
-      const existing = await getSale(saleId);
-      if (existing) {
-        await putSale({
-          ...existing,
-          status: "PAGO_RECHAZADO",
-          updatedAt: timestamp,
-        });
-      }
+      await Promise.all([
+        putSale(updatedSale),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     retrySale: async (saleId, paymentMethod) => {
       const timestamp = now();
+      const existing =
+        get().queue.find((sale) => sale.id === saleId) ||
+        (await getSale(saleId));
+      if (!existing) return;
+
+      const updatedSale: Sale = {
+        ...existing,
+        status: "PENDIENTE_PAGO",
+        paymentMethod,
+        updatedAt: timestamp,
+      };
       set((state) => ({
         queue: state.queue.map((s) =>
-          s.id === saleId
-            ? {
-                ...s,
-                status: "PENDIENTE_PAGO" as SaleStatus,
-                paymentMethod,
-                updatedAt: timestamp,
-              }
-            : s,
+          s.id === saleId ? updatedSale : s,
+        ),
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
         ),
       }));
 
-      const existing = await getSale(saleId);
-      if (existing) {
-        await putSale({
-          ...existing,
-          status: "PENDIENTE_PAGO",
-          paymentMethod,
-          updatedAt: timestamp,
-        });
-      }
+      await Promise.all([
+        putSale(updatedSale),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     changePaymentMethod: async (saleId, paymentMethod) => {
       const timestamp = now();
+      const existing =
+        get().queue.find((sale) => sale.id === saleId) ||
+        (await getSale(saleId));
+      if (!existing) return;
+
+      const updatedSale = { ...existing, paymentMethod, updatedAt: timestamp };
       set((state) => ({
         queue: state.queue.map((s) =>
-          s.id === saleId ? { ...s, paymentMethod, updatedAt: timestamp } : s,
+          s.id === saleId ? updatedSale : s,
+        ),
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
         ),
       }));
 
-      const existing = await getSale(saleId);
-      if (existing) {
-        await putSale({ ...existing, paymentMethod, updatedAt: timestamp });
-      }
+      await Promise.all([
+        putSale(updatedSale),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     cancelSale: async (saleId) => {
       const timestamp = now();
+      const existing =
+        get().queue.find((sale) => sale.id === saleId) ||
+        (await getSale(saleId));
+      if (!existing) return;
+
+      const updatedSale: Sale = {
+        ...existing,
+        status: "CANCELADA",
+        updatedAt: timestamp,
+        closedAt: timestamp,
+      };
       set((state) => ({
         queue: state.queue.filter((s) => s.id !== saleId),
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
+        ),
       }));
 
-      const existing = await getSale(saleId);
-      if (existing) {
-        await putSale({
-          ...existing,
-          status: "CANCELADA",
-          updatedAt: timestamp,
-          closedAt: timestamp,
-        });
-      }
+      await Promise.all([
+        putSale(updatedSale),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     recordCashPayment: async (
@@ -617,6 +788,10 @@ export const usePosStore = create<PosState>()(
 
       const existing = (await getSale(saleId)) || get().queue.find((s) => s.id === saleId);
       if (!existing) return;
+
+      if (!Number.isFinite(cashReceived) || cashReceived < existing.total) {
+        throw new Error("El monto recibido no cubre el total");
+      }
 
       const change = Math.max(0, cashReceived - existing.total);
       const invoiceNumber =
@@ -680,10 +855,17 @@ export const usePosStore = create<PosState>()(
         queue: state.queue.filter((s) => s.id !== saleId),
         completedSales: [updatedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
         invoices: [invoice, ...state.invoices.filter((i) => i.saleId !== saleId)],
+        paymentHistory: replacePaymentHistoryEntry(
+          state.paymentHistory,
+          updatedSale,
+        ),
       }));
 
-      await putSale(updatedSale);
-      await putInvoice(invoice);
+      await Promise.all([
+        putSale(updatedSale),
+        putInvoice(invoice),
+        updatePaymentHistory(updatedSale),
+      ]);
     },
 
     /* ════════════════════════════════════════════════════════════════════════
@@ -823,50 +1005,41 @@ export const usePosStore = create<PosState>()(
     },
 
     upsertProduct: async (formData: ProductFormData, productId?: string) => {
-      const { businessId, branchId, products, productsMap } = get();
-
-      let id = productId || formData.id;
-      if (!id) {
-        let candidate = generateProductId(formData.category, formData.name);
-        if (productsMap.has(candidate)) {
-          candidate = `${candidate}-${Date.now().toString(36).slice(-4)}`;
-        }
-        id = candidate;
+      const { businessId, branchId, products } = get();
+      const productToSave = normalizeProductDraft(
+        { ...formData, id: productId ?? formData.id },
+        { businessId, branchId, existingProducts: products },
+      );
+      const validationErrors = validateProductDraft(productToSave, products);
+      if (validationErrors.length > 0) {
+        throw new Error(validationErrors.join(" "));
       }
-
-      const cleanBarcode = formData.barcode
-        ? normalizeBarcode(formData.barcode)
-        : undefined;
-
-      const productToSave: Product = {
-        ...formData,
-        id,
-        businessId,
-        branchId,
-        barcode: cleanBarcode || undefined,
-        shortName: formData.shortName?.trim() || undefined,
-      };
 
       // Persistir en IndexedDB
       await putProduct(productToSave);
 
       // Actualizar síncronamente en memoria (O(1) para el Map y reactividad inmediata)
-      const existingIndex = products.findIndex((p) => p.id === id);
+      const currentState = get();
+      const existingIndex = currentState.products.findIndex(
+        (product) => product.id === productToSave.id,
+      );
       let newProducts: Product[];
       if (existingIndex >= 0) {
-        newProducts = [...products];
+        newProducts = [...currentState.products];
         newProducts[existingIndex] = productToSave;
       } else {
-        newProducts = [productToSave, ...products];
+        newProducts = [productToSave, ...currentState.products];
       }
 
-      const newMap = new Map(productsMap);
-      newMap.set(id, productToSave);
+      const newMap = new Map(currentState.productsMap);
+      newMap.set(productToSave.id, productToSave);
 
       set({
         products: newProducts,
         productsMap: newMap,
+        lastProductId: productToSave.id,
       });
+      await setSetting("lastProductId", productToSave.id);
 
       return productToSave;
     },
@@ -879,12 +1052,15 @@ export const usePosStore = create<PosState>()(
       }
 
       const clonedData = cloneProductData(source, newName);
-      let newId = `${source.id}-copia`;
-      if (productsMap.has(newId)) {
-        newId = `${newId}-${Date.now().toString(36).slice(-4)}`;
-      }
+      return upsertProduct(clonedData);
+    },
 
-      return upsertProduct(clonedData, newId);
+    duplicateLastProduct: async () => {
+      const lastProductId = get().lastProductId;
+      if (!lastProductId) {
+        throw new Error("Todavía no hay un producto creado o editado para duplicar.");
+      }
+      return get().duplicateProduct(lastProductId);
     },
 
     removeProduct: async (productId: string) => {
@@ -898,7 +1074,12 @@ export const usePosStore = create<PosState>()(
       set({
         products: newProducts,
         productsMap: newMap,
+        lastProductId:
+          get().lastProductId === productId ? null : get().lastProductId,
       });
+      if (get().lastProductId === null) {
+        await setSetting("lastProductId", null);
+      }
     },
   })),
 );
