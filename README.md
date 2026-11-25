@@ -39,6 +39,12 @@ Desarrollado con **React 19**, **TypeScript**, **Vite**, **Tailwind CSS v4**, **
 
 ---
 
+## 🤖 Trabajo con agentes
+
+Las reglas operativas y procedimientos reutilizables para cambios asistidos por IA están en [`AGENTS.md`](./AGENTS.md) y [`docs/agent-workflow.md`](./docs/agent-workflow.md). Consultá los [playbooks](./docs/playbooks/) antes de tocar flujos de caja, IndexedDB o preparar un despliegue. Las decisiones funcionales del producto siguen en [`DECISIONES_ETAPA_1.md`](./DECISIONES_ETAPA_1.md).
+
+---
+
 ## 🛠️ Ejecución Local y Verificación
 
 ### 1. Requisitos
@@ -61,7 +67,7 @@ Accedé localmente en `http://localhost:3000`.
 # Comprobación de TypeScript
 npm run typecheck
 
-# Tests unitarios y de integración de IndexedDB + ARCA
+# Tests disponibles (scripts de etapas y lógica/IndexedDB)
 npm test
 ```
 
