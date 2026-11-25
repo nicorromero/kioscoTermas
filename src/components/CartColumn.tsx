@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState } from "react";
 import {
   ShoppingCart,
   Trash2,
@@ -53,20 +53,14 @@ export const CartColumn: React.FC<CartColumnProps> = ({
 }) => {
   const [showDiscountInput, setShowDiscountInput] = useState(false);
   const [discountVal, setDiscountVal] = useState("0");
-  const [showModifierEditor, setShowModifierEditor] = useState(false);
-  const pendingLineClick = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [modifierEditorLineKey, setModifierEditorLineKey] = useState<string | null>(null);
+  const [editingQtyLineKey, setEditingQtyLineKey] = useState<string | null>(null);
+  const [qtyInputValue, setQtyInputValue] = useState("");
 
   const totalUnits = cart.reduce((sum, i) => sum + i.qty, 0);
   const finalTotal = Math.max(0, cartTotal - cartDiscount);
   const appliedDiscountPercent =
     cartTotal > 0 ? Number(((cartDiscount / cartTotal) * 100).toFixed(2)) : 0;
-
-  useEffect(
-    () => () => {
-      if (pendingLineClick.current) clearTimeout(pendingLineClick.current);
-    },
-    [],
-  );
 
   const applyDiscountPercent = (percent: number) => {
     onSetDiscount(Math.round((cartTotal * percent) / 100));
@@ -74,37 +68,22 @@ export const CartColumn: React.FC<CartColumnProps> = ({
     setShowDiscountInput(false);
   };
 
-  const handleLineClick = (lineKey: string, clickCount: number) => {
-    if (clickCount === 3) {
-      if (pendingLineClick.current) {
-        clearTimeout(pendingLineClick.current);
-        pendingLineClick.current = null;
-      }
-      onRemoveItem(lineKey);
-      return;
-    }
-    if (clickCount === 2) {
-      if (pendingLineClick.current) {
-        clearTimeout(pendingLineClick.current);
-        pendingLineClick.current = null;
-      }
-      return;
-    }
-    if (clickCount !== 1) return;
+  const startQtyEdit = (lineKey: string, qty: number) => {
+    setEditingQtyLineKey(lineKey);
+    setQtyInputValue(String(qty));
+  };
 
-    if (pendingLineClick.current) clearTimeout(pendingLineClick.current);
-    pendingLineClick.current = setTimeout(() => {
-      pendingLineClick.current = null;
-      if (lineKey !== selectedLineKey) {
-        setShowModifierEditor(false);
-        onSelectLine(lineKey);
-      }
-    }, 350);
+  const saveQtyEdit = (lineKey: string, currentQty: number) => {
+    const newQty = Number(qtyInputValue);
+    if (!Number.isSafeInteger(newQty) || newQty < 1) return;
+
+    const delta = newQty - currentQty;
+    if (delta !== 0) onUpdateQty(lineKey, delta);
+    setEditingQtyLineKey(null);
   };
 
   const selectLine = (lineKey: string) => {
     if (lineKey !== selectedLineKey) {
-      setShowModifierEditor(false);
       onSelectLine(lineKey);
     }
   };
@@ -158,10 +137,11 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                 key={item.lineKey}
                 role="button"
                 tabIndex={0}
-                onClick={(event) => handleLineClick(item.lineKey, event.detail)}
+                onClick={() => selectLine(item.lineKey)}
                 onDoubleClick={(event) => {
                   event.preventDefault();
-                  onUpdateQty(item.lineKey, 1);
+                  selectLine(item.lineKey);
+                  startQtyEdit(item.lineKey, item.qty);
                 }}
                 onKeyDown={(event) => {
                   if (
@@ -172,7 +152,7 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                     selectLine(item.lineKey);
                   }
                 }}
-                aria-label={`${item.name}, cantidad ${item.qty}, subtotal ${formatCurrency(item.subtotal)}. Doble clic para sumar una unidad; triple clic para eliminar.`}
+                aria-label={`${item.name}, cantidad ${item.qty}, subtotal ${formatCurrency(item.subtotal)}. Doble clic en la tarjeta para editar la cantidad; Enter para confirmar.`}
                 className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
                   isSelected
                     ? "bg-slate-850 border-emerald-400 ring-1 ring-emerald-500/60 shadow-sm shadow-emerald-950/40"
@@ -186,12 +166,6 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                       <p className="font-semibold text-xs text-white truncate">
                         {item.name}
                       </p>
-                      <span
-                        className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-200"
-                        aria-label={`Cantidad ${item.qty}`}
-                      >
-                        ×{item.qty}
-                      </span>
                       {isSelected && (
                         <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 shrink-0">
                           Seleccionado
@@ -210,11 +184,9 @@ export const CartColumn: React.FC<CartColumnProps> = ({
 
                 {/* Modificadores Seleccionados */}
                 {(item.selectedModifiers.length > 0 ||
-                  (isSelected && hasModifiers && originalProduct)) && (
+                  (hasModifiers && originalProduct)) && (
                   <div
                     className="mt-1.5 pt-1 border-t border-slate-800/60 flex flex-wrap items-center gap-1"
-                    onClick={(event) => event.stopPropagation()}
-                    onDoubleClick={(event) => event.stopPropagation()}
                   >
                     {item.selectedModifiers.map((mod) => (
                       <span
@@ -229,12 +201,18 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                         )}
                       </span>
                     ))}
-                    {isSelected && hasModifiers && originalProduct && (
+                    {hasModifiers && originalProduct && (
                       <button
                         type="button"
-                        onClick={() => setShowModifierEditor((show) => !show)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setModifierEditorLineKey((current) =>
+                            current === item.lineKey ? null : item.lineKey,
+                          );
+                        }}
+                        onDoubleClick={(event) => event.stopPropagation()}
                         className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1"
-                        aria-expanded={showModifierEditor}
+                        aria-expanded={modifierEditorLineKey === item.lineKey}
                         title="Modificar extras"
                       >
                         <Edit2 className="w-3 h-3" />
@@ -244,52 +222,81 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                   </div>
                 )}
 
-                {/* Controles visibles al seleccionar la línea */}
-                {isSelected && (
-                  <div
-                    className="mt-2 flex flex-col gap-2 pt-2 border-t border-slate-800/40"
-                    onClick={(event) => event.stopPropagation()}
+                <div
+                  className="mt-2 grid grid-cols-[1fr_auto_1fr_1fr] items-center gap-2 border-t border-slate-800/40 pt-2"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onUpdateQty(item.lineKey, 1)}
                     onDoubleClick={(event) => event.stopPropagation()}
+                    className="h-11 w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition-colors"
+                    aria-label="Sumar una unidad"
+                    title="Sumar una unidad"
                   >
-                    <div className="grid grid-cols-[1fr_auto_1fr_1fr] items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQty(item.lineKey, 1)}
-                        className="h-11 w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center transition-colors"
-                        aria-label="Sumar una unidad"
-                        title="Sumar una unidad"
-                      >
-                        <Plus className="w-5 h-5" />
-                      </button>
-                      <span
-                        className="flex h-11 min-w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-2 font-mono text-sm font-bold text-white"
-                        aria-label={`Cantidad actual: ${item.qty}`}
-                      >
-                        {item.qty}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQty(item.lineKey, -1)}
-                        className="h-11 w-full rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 flex items-center justify-center transition-colors"
-                        aria-label="Restar una unidad"
-                        title="Restar una unidad"
-                      >
-                        <Minus className="w-5 h-5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveItem(item.lineKey)}
-                        className="h-11 w-full rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-300 flex items-center justify-center transition-colors"
-                        aria-label="Eliminar ítem"
-                        title="Eliminar ítem"
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
+                    <Plus className="w-5 h-5" />
+                  </button>
+                  {editingQtyLineKey === item.lineKey ? (
+                    <input
+                      autoFocus
+                      type="number"
+                      min="1"
+                      max={Number.MAX_SAFE_INTEGER}
+                      step="1"
+                      required
+                      value={qtyInputValue}
+                      onChange={(event) => setQtyInputValue(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onFocus={(event) => event.currentTarget.select()}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          if (event.currentTarget.reportValidity()) {
+                            saveQtyEdit(item.lineKey, item.qty);
+                          }
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          setEditingQtyLineKey(null);
+                        }
+                      }}
+                      className="h-11 w-16 rounded-lg border border-emerald-500 bg-slate-950 px-1 text-center text-sm font-mono font-bold text-white focus:outline-none"
+                      aria-label={`Editar cantidad de ${item.name}; Enter para guardar, Escape para cancelar`}
+                      title="Enter para confirmar, Escape para cancelar"
+                    />
+                  ) : (
+                    <span
+                      className="flex h-11 min-w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-2 font-mono text-sm font-bold text-white"
+                      aria-label={`Cantidad actual: ${item.qty}`}
+                      title="Doble clic en la tarjeta para editar cantidad"
+                    >
+                      {item.qty}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onUpdateQty(item.lineKey, -1)}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    className="h-11 w-full rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 flex items-center justify-center transition-colors"
+                    aria-label="Restar una unidad"
+                    title="Restar una unidad"
+                  >
+                    <Minus className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveItem(item.lineKey)}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    className="h-11 w-full rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-300 flex items-center justify-center transition-colors"
+                    aria-label="Eliminar ítem"
+                    title="Eliminar ítem"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
 
-                {isSelected && showModifierEditor && hasModifiers && originalProduct && (
+                {modifierEditorLineKey === item.lineKey && hasModifiers && originalProduct && (
                   <div
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -298,7 +305,7 @@ export const CartColumn: React.FC<CartColumnProps> = ({
                       product={originalProduct}
                       mode="edit"
                       initialModifiers={item.selectedModifiers}
-                      onClose={() => setShowModifierEditor(false)}
+                      onClose={() => setModifierEditorLineKey(null)}
                       onChangeModifiers={(modifiers) =>
                         onChangeModifiers(item.lineKey, originalProduct, modifiers)
                       }
