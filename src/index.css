@@ -23,3 +23,74 @@ html, body, #root {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(71, 85, 105, 1);
 }
+
+@page {
+  size: auto;
+  margin: 0;
+}
+
+@media print {
+  html,
+  body,
+  #root {
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  #close-ticket-print,
+  #close-ticket-print * {
+    visibility: visible !important;
+  }
+
+  #close-ticket-print {
+    position: fixed !important;
+    inset: 0 auto auto 0 !important;
+    display: block !important;
+    width: 76mm !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 3mm !important;
+    overflow: visible !important;
+    border: 0 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    color: #000 !important;
+    font: 9pt/1.25 monospace !important;
+  }
+
+  #close-ticket-print.paper-58 {
+    width: 54mm !important;
+  }
+
+  #close-ticket-print.paper-80 {
+    width: 76mm !important;
+  }
+
+  #close-ticket-print,
+  #close-ticket-print * {
+    border-color: #000 !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+    color: #000 !important;
+  }
+
+  .ticket-no-print {
+    display: none !important;
+  }
+
+  .ticket-paper .ticket-row {
+    break-inside: avoid;
+  }
+
+  #close-ticket-print .grid {
+    display: block !important;
+  }
+}

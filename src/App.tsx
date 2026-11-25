@@ -18,6 +18,7 @@ import { QuickCashModal } from "./components/QuickCashModal";
 import { SimulationPanel } from "./components/SimulationPanel";
 import { BillingOfflineView } from "./components/BillingOfflineView";
 import { OwnerMobileView } from "./components/OwnerMobileView";
+import { CashShiftManager } from "./components/CashShiftManager";
 
 export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -60,6 +61,7 @@ export function App() {
   const [isQuickCashModalOpen, setIsQuickCashModalOpen] = useState(false);
   const [isSimulationOpen, setIsSimulationOpen] = useState(false);
   const [isProductDrawerOpen, setIsProductDrawerOpen] = useState(false);
+  const [isCashShiftDialogOpen, setIsCashShiftDialogOpen] = useState(false);
   const [drawerTargetProduct, setDrawerTargetProduct] = useState<Product | null>(null);
   const [isQueueExpanded, setIsQueueExpanded] = useState(false);
 
@@ -127,6 +129,10 @@ export function App() {
     setIsQueueExpanded(true);
   }, []);
 
+  const handleCashShiftDialogChange = useCallback((isOpen: boolean) => {
+    setIsCashShiftDialogOpen(isOpen);
+  }, []);
+
   // Atajos: +/- sobre la línea seleccionada (o la última como fallback).
   const handleIncrementLastItem = useCallback(() => {
     if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
@@ -191,7 +197,7 @@ export function App() {
     onEscape: handleEscape,
     onIncrementLastItem: handleIncrementLastItem,
     onDecrementLastItem: handleDecrementLastItem,
-    disabled: activeView !== "caja" || isProductDrawerOpen,
+    disabled: activeView !== "caja" || isProductDrawerOpen || isCashShiftDialogOpen,
   });
 
   // Finalizar cobro desde el modal general (F8)
@@ -271,6 +277,10 @@ export function App() {
             Abrir y resolver cola
           </button>
         </div>
+      )}
+
+      {activeView === "caja" && (
+        <CashShiftManager onDialogChange={handleCashShiftDialogChange} />
       )}
 
       {/* ── Vista 1: Caja Kiosco (3 Columnas) ── */}
