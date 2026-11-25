@@ -154,6 +154,10 @@ export interface Sale {
   id: string;
   businessId: string;
   branchId: string;
+  /** Turno al que se atribuye la venta; opcional para registros previos a caja. */
+  shiftId?: string;
+  /** Turno donde finalmente se confirmó un pago pendiente de un turno cerrado. */
+  settledInShiftId?: string;
   items: CartItem[];
   status: SaleStatus;
   paymentMethod?: PaymentMethod;
@@ -172,6 +176,11 @@ export interface Sale {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   closedAt?: string; // ISO 8601
+  /** Momento del cobro exitoso; se conserva aunque luego se anule la venta. */
+  paidAt?: string; // ISO 8601
+  cancelledAt?: string; // ISO 8601
+  cancelledBy?: string;
+  cancellationReason?: string;
 
   // Datos fiscales asociados
   invoiceType?: InvoiceType;
@@ -179,4 +188,110 @@ export interface Sale {
   fiscalStatus?: FiscalStatus;
   cae?: string;
   customer?: FiscalCustomer;
+}
+
+/* ── Caja ──────────────────────────────────────────────────────────────────── */
+
+export type CashShiftStatus = "OPEN" | "CLOSED";
+
+export interface CashShift {
+  id: string;
+  /** Correlativo único por negocio y sucursal. */
+  shiftNumber: string;
+  businessId: string;
+  branchId: string;
+  openedBy: string;
+  openedAt: string; // ISO 8601
+  openingCash: number;
+  movements: CashMovement[];
+  status: CashShiftStatus;
+  closedAt?: string; // ISO 8601
+  closedBy?: string;
+  closeSummary?: CashCloseSummary;
+  /** Identificador mantenido para compatibilidad con cierres previos. */
+  closeSummaryId?: string;
+}
+
+export type CashMovementType = "WITHDRAWAL" | "CASH_IN" | "EXPENSE";
+
+export interface CashMovement {
+  id: string;
+  shiftId: string;
+  businessId: string;
+  branchId: string;
+  type: CashMovementType;
+  /** Importe positivo; el signo se deriva de `type`. */
+  amount: number;
+  reason: string;
+  createdBy: string;
+  /** Nombre previo conservado para registros y clientes existentes. */
+  performedBy?: string;
+  authorizedBy?: string;
+  createdAt: string; // ISO 8601
+  /** Se informa para retiros que devuelven efectivo de una venta cobrada. */
+  relatedSaleId?: string;
+}
+
+export type CashAmountsByPaymentMethod = Record<PaymentMethod, number>;
+export type NonCashPaymentMethod = Exclude<PaymentMethod, "EFECTIVO">;
+export type CashDifferenceStatus = "SURPLUS" | "SHORTAGE" | "EXACT";
+export type ShiftApprovalStatus =
+  | "NOT_REQUIRED"
+  | "PENDING"
+  | "APPROVED"
+  | "OBSERVED";
+
+export interface PosnetReconciliationItem {
+  id: string;
+  /** Alias visible (ej. "Posnet Mostrador" o "QR"). */
+  label: string;
+  /** Lote o comprobante, si está disponible. */
+  reference?: string;
+  systemAmount: number;
+  declaredAmount: number;
+}
+
+export interface CashCloseSummary {
+  id: string;
+  shiftId: string;
+  businessId: string;
+  branchId: string;
+  closedAt: string; // ISO 8601
+  closedBy: string;
+  salesCountPaid: number;
+  salesCountCancelled: number;
+  totalCancelledAmount: number;
+  totalsByPayment: CashAmountsByPaymentMethod;
+  openingCash: number;
+  cashInTotal: number;
+  withdrawalsTotal: number;
+  expensesTotal: number;
+  expectedCash: number;
+  declaredCash: number;
+  cashDifference: number;
+  posnetItems: PosnetReconciliationItem[];
+  reconciliationPending: boolean;
+  approvalStatus: ShiftApprovalStatus;
+  approvedBy?: string;
+  approvedAt?: string;
+  notes?: string;
+  latePaymentsCount: number;
+  latePaymentsAmount: number;
+
+  /** Alias históricos conservados para consumidores existentes. */
+  paidSaleCount: number;
+  cancelledSaleCount: number;
+  cancelledPaidCount: number;
+  cancelledUnpaidCount: number;
+  collectedByPaymentMethod: CashAmountsByPaymentMethod;
+  cancelledGrossAmount: number;
+  cancelledPaidGrossAmount: number;
+  cancelledUnpaidGrossAmount: number;
+  withdrawalTotal: number;
+  expenseTotal: number;
+  cashDifferenceStatus: CashDifferenceStatus;
+  declaredNonCash?: Partial<Record<NonCashPaymentMethod, number>>;
+  reconciledNonCash?: Partial<Record<NonCashPaymentMethod, number>>;
+  nonCashDifference?: Partial<Record<NonCashPaymentMethod, number>>;
+  observations?: string;
 }

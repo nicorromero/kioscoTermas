@@ -16,6 +16,12 @@ import type {
   InvoiceType,
   FiscalCustomer,
   FiscalStatus,
+  CashCloseSummary,
+  CashMovement,
+  CashMovementType,
+  CashShift,
+  PosnetReconciliationItem,
+  ShiftApprovalStatus,
 } from "../types/pos";
 import { seedProducts } from "../data/seedProducts";
 import {
@@ -35,6 +41,16 @@ import {
   getNextInvoiceNumber,
   getSetting,
   setSetting,
+  createCashShift,
+  getCashShifts,
+  getOpenCashShift,
+  getCashShift,
+  recordCashMovement,
+  closeCashShift,
+  relayCashShift,
+  updateCashShiftReconciliation,
+  updateCashShiftApproval,
+  putPaidSale,
   toggleFavorite as dbToggleFavorite,
   putProduct,
   deleteProduct,
@@ -79,6 +95,12 @@ function generateInvoiceId(): string {
   return `inv-${ts}-${rnd}`;
 }
 
+function generateRecordId(prefix: string): string {
+  const ts = Date.now().toString(36);
+  const rnd = Math.random().toString(36).slice(2, 8);
+  return `${prefix}-${ts}-${rnd}`;
+}
+
 function generateCae(): string {
   const part1 = "742";
   const part2 = Math.floor(10000000000 + Math.random() * 90000000000).toString();
@@ -109,6 +131,17 @@ function replacePaymentHistoryEntry(history: Sale[], sale: Sale): Sale[] {
   return history.map((entry) => (entry.id === sale.id ? sale : entry));
 }
 
+type ShiftCloseInput = {
+  closedBy: string;
+  declaredCash: number;
+  posnetItems?: PosnetReconciliationItem[];
+  reconciliationPending?: boolean;
+  notes?: string;
+  approvalStatus?: ShiftApprovalStatus;
+  approvedBy?: string;
+  approvalNote?: string;
+};
+
 /* ══════════════════════════════════════════════════════════════════════════════
    State shape
    ══════════════════════════════════════════════════════════════════════════════ */
@@ -134,6 +167,10 @@ export interface PosState {
   // ── Cola de ventas en mostrador ──
   queue: Sale[];
   paymentHistory: Sale[];
+
+  // ── Turnos de caja ──
+  shifts: CashShift[];
+  activeShift: CashShift | null;
 
   // ── Ventas completadas & Comprobantes ──
   completedSales: Sale[];
@@ -175,12 +212,46 @@ export interface PosState {
     saleId: string,
     paymentMethod: PaymentMethod,
   ) => Promise<void>;
-  cancelSale: (saleId: string) => Promise<void>;
+  cancelSale: (
+    saleId: string,
+    details?: { cancelledBy?: string; cancellationReason?: string },
+  ) => Promise<void>;
   recordCashPayment: (
     saleId: string,
     cashReceived: number,
     invoiceType?: InvoiceType,
     customer?: FiscalCustomer,
+  ) => Promise<void>;
+
+  // ── Acciones: caja ──
+  openShift: (input: {
+    cashierName: string;
+    openingCash: number;
+  }) => Promise<CashShift>;
+  relayShift: (
+    input: ShiftCloseInput & {
+      nextCashierName: string;
+      nextOpeningCash: number;
+    },
+  ) => Promise<CashShift>;
+  addCashMovement: (input: {
+    type: CashMovementType;
+    amount: number;
+    reason: string;
+    createdBy: string;
+    authorizedBy?: string;
+  }) => Promise<CashMovement>;
+  closeShift: (input: ShiftCloseInput) => Promise<CashCloseSummary>;
+  updateShiftReconciliation: (
+    shiftId: string,
+    posnetItems: PosnetReconciliationItem[],
+    reconciliationPending: boolean,
+  ) => Promise<void>;
+  resolveShiftApproval: (
+    shiftId: string,
+    approvalStatus: Exclude<ShiftApprovalStatus, "NOT_REQUIRED">,
+    resolvedBy: string,
+    note?: string,
   ) => Promise<void>;
 
   // ── Acciones: comprobantes fiscales & offline ──
@@ -233,6 +304,8 @@ export const usePosStore = create<PosState>()(
     draftId: generateSaleId(),
     queue: [],
     paymentHistory: [],
+    shifts: [],
+    activeShift: null,
     completedSales: [],
     invoices: [],
     isOffline: initialOfflineSetting,
@@ -256,6 +329,8 @@ export const usePosStore = create<PosState>()(
         // 3. Cargar cola de ventas pendientes (PENDIENTE_PAGO / PAGO_RECHAZADO)
         const queue = await getQueuedSales(biz, branch);
         const paymentHistory = await getPaymentHistory(biz, branch);
+        const shifts = await getCashShifts(biz, branch);
+        const activeShift = shifts.find((shift) => shift.status === "OPEN") ?? null;
 
         // 4. Cargar ventas completadas y comprobantes
         const completedSales = await getCompletedSales(biz, branch);
@@ -276,6 +351,8 @@ export const usePosStore = create<PosState>()(
           catalogReady: true,
           queue,
           paymentHistory,
+          shifts,
+          activeShift,
           completedSales,
           invoices,
           isOffline,
@@ -289,8 +366,210 @@ export const usePosStore = create<PosState>()(
           productsMap: initialProductsMap,
           lastProductId: null,
           catalogReady: true,
+          shifts: [],
+          activeShift: null,
         });
       }
+    },
+
+    openShift: async ({ cashierName, openingCash }) => {
+      const { businessId, branchId } = get();
+      const openedBy = cashierName.trim();
+      if (!openedBy) throw new Error("El turno requiere el nombre del cajero");
+      if (!Number.isFinite(openingCash) || openingCash < 0) {
+        throw new RangeError("El fondo inicial debe ser un importe no negativo");
+      }
+
+      const shift = await createCashShift({
+        id: generateRecordId("shift"),
+        businessId,
+        branchId,
+        openedBy,
+        openedAt: now(),
+        openingCash,
+        movements: [],
+        status: "OPEN",
+      });
+      const [shifts, paymentHistory, completedSales] = await Promise.all([
+        getCashShifts(businessId, branchId),
+        getPaymentHistory(businessId, branchId),
+        getCompletedSales(businessId, branchId),
+      ]);
+      set({ shifts, activeShift: shift, paymentHistory, completedSales });
+      return shift;
+    },
+
+    relayShift: async ({
+      closedBy,
+      declaredCash,
+      nextCashierName,
+      nextOpeningCash,
+      posnetItems,
+      reconciliationPending,
+      approvalStatus,
+      approvedBy,
+      approvalNote,
+      notes,
+    }) => {
+      const { businessId, branchId } = get();
+      const outgoingShift = await getOpenCashShift(businessId, branchId);
+      if (!outgoingShift) throw new Error("No hay un turno abierto para relevar");
+
+      const timestamp = now();
+      const result = await relayCashShift(
+        outgoingShift.id,
+        {
+          id: generateRecordId("close"),
+          closedBy: closedBy.trim(),
+          closedAt: timestamp,
+          declaredCash,
+          posnetItems,
+          reconciliationPending,
+          approvalStatus,
+          approvedBy: approvedBy?.trim(),
+          approvedAt: approvedBy ? timestamp : undefined,
+          notes: notes?.trim() || undefined,
+          observations: approvalNote?.trim() || undefined,
+        },
+        {
+          id: generateRecordId("shift"),
+          businessId,
+          branchId,
+          openedBy: nextCashierName.trim(),
+          openedAt: timestamp,
+          openingCash: nextOpeningCash,
+          movements: [],
+          status: "OPEN",
+        },
+      );
+      const [shifts, paymentHistory, completedSales] = await Promise.all([
+        getCashShifts(businessId, branchId),
+        getPaymentHistory(businessId, branchId),
+        getCompletedSales(businessId, branchId),
+      ]);
+      set({
+        shifts,
+        activeShift: result.openedShift,
+        paymentHistory,
+        completedSales,
+      });
+      return result.openedShift;
+    },
+
+    addCashMovement: async ({
+      type,
+      amount,
+      reason,
+      createdBy,
+      authorizedBy,
+    }) => {
+      const { businessId, branchId } = get();
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new RangeError("El importe del movimiento debe ser mayor que cero");
+      }
+      const cleanReason = reason.trim();
+      const cleanCreatedBy = createdBy.trim();
+      if (!cleanReason) throw new Error("El movimiento requiere un motivo");
+      if (!cleanCreatedBy) throw new Error("El movimiento requiere responsable");
+      if (!["WITHDRAWAL", "CASH_IN", "EXPENSE"].includes(type)) {
+        throw new Error("Tipo de movimiento inválido");
+      }
+
+      const shift = await getOpenCashShift(businessId, branchId);
+      if (!shift) throw new Error("No hay un turno abierto para registrar el movimiento");
+      const movement: CashMovement = {
+        id: generateRecordId("movement"),
+        shiftId: shift.id,
+        businessId,
+        branchId,
+        type,
+        amount,
+        reason: cleanReason,
+        createdBy: cleanCreatedBy,
+        performedBy: cleanCreatedBy,
+        authorizedBy: authorizedBy?.trim() || undefined,
+        createdAt: now(),
+      };
+      await recordCashMovement(movement);
+      const [updatedShift, shifts] = await Promise.all([
+        getCashShift(shift.id),
+        getCashShifts(businessId, branchId),
+      ]);
+      if (!updatedShift) throw new Error("No se pudo recuperar el turno actualizado");
+      set({ shifts, activeShift: updatedShift });
+      return movement;
+    },
+
+    closeShift: async ({
+      closedBy,
+      declaredCash,
+      posnetItems,
+      reconciliationPending,
+      approvalStatus,
+      approvedBy,
+      approvalNote,
+      notes,
+    }) => {
+      const { businessId, branchId } = get();
+      const activeShift = await getOpenCashShift(businessId, branchId);
+      if (!activeShift) throw new Error("No hay un turno abierto para cerrar");
+      const timestamp = now();
+      const summary = await closeCashShift(activeShift.id, {
+        id: generateRecordId("close"),
+        closedBy: closedBy.trim(),
+        closedAt: timestamp,
+        declaredCash,
+        posnetItems,
+        reconciliationPending,
+        approvalStatus,
+        approvedBy: approvedBy?.trim(),
+        approvedAt: approvedBy ? timestamp : undefined,
+        notes: notes?.trim() || undefined,
+        observations: approvalNote?.trim() || undefined,
+      });
+      const [closedShift, shifts] = await Promise.all([
+        getCashShift(activeShift.id),
+        getCashShifts(businessId, branchId),
+      ]);
+      if (!closedShift) throw new Error("No se pudo recuperar el turno cerrado");
+      set({ shifts, activeShift: null });
+      return summary;
+    },
+
+    updateShiftReconciliation: async (
+      shiftId,
+      posnetItems,
+      reconciliationPending,
+    ) => {
+      const updatedShift = await updateCashShiftReconciliation(
+        shiftId,
+        posnetItems,
+        reconciliationPending,
+      );
+      set((state) => ({
+        shifts: state.shifts.map((shift) =>
+          shift.id === shiftId ? updatedShift : shift,
+        ),
+      }));
+    },
+
+    resolveShiftApproval: async (
+      shiftId,
+      approvalStatus,
+      resolvedBy,
+      note,
+    ) => {
+      const updatedShift = await updateCashShiftApproval(
+        shiftId,
+        approvalStatus,
+        resolvedBy,
+        note,
+      );
+      set((state) => ({
+        shifts: state.shifts.map((shift) =>
+          shift.id === shiftId ? updatedShift : shift,
+        ),
+      }));
     },
 
     /* ════════════════════════════════════════════════════════════════════════
@@ -508,7 +787,7 @@ export const usePosStore = create<PosState>()(
         draftId,
         businessId,
         branchId,
-        isOffline,
+        activeShift,
       } = get();
       if (cart.length === 0) throw new Error("El carrito está vacío");
 
@@ -543,6 +822,7 @@ export const usePosStore = create<PosState>()(
         id: saleId,
         businessId,
         branchId,
+        shiftId: activeShift?.id,
         items: structuredClone(cart),
         status: "PENDIENTE_PAGO",
         paymentMethod,
@@ -570,15 +850,35 @@ export const usePosStore = create<PosState>()(
         paymentHistory: updateRecentPaymentHistory(state.paymentHistory, sale),
       }));
 
-      // 2. Persistir en IndexedDB en segundo plano
-      await Promise.all([putSale(sale), addPaymentHistory(sale)]);
+      // Resolve the IndexedDB shift after the synchronous UI update.
+      const persistedOpenShift = await getOpenCashShift(businessId, branchId);
+      const attributedSale: Sale = {
+        ...sale,
+        shiftId: persistedOpenShift?.id ?? sale.shiftId,
+      };
+      if (attributedSale.shiftId !== sale.shiftId) {
+        set((state) => ({
+          queue: state.queue.map((entry) =>
+            entry.id === sale.id ? attributedSale : entry,
+          ),
+          paymentHistory: replacePaymentHistoryEntry(
+            state.paymentHistory,
+            attributedSale,
+          ),
+        }));
+      }
 
-      return sale;
+      await Promise.all([
+        putSale(attributedSale),
+        addPaymentHistory(attributedSale),
+      ]);
+
+      return attributedSale;
     },
 
     markSalePaid: async (saleId) => {
       const timestamp = now();
-      const { businessId, branchId, isOffline } = get();
+      const { isOffline } = get();
 
       const existing = (await getSale(saleId)) || get().queue.find((s) => s.id === saleId);
       if (!existing) return;
@@ -586,7 +886,11 @@ export const usePosStore = create<PosState>()(
       const invoiceType: InvoiceType = existing.invoiceType || "FACTURA_B";
       const invoiceNumber =
         existing.invoiceNumber ||
-        (await getNextInvoiceNumber(businessId, branchId, invoiceType));
+        (await getNextInvoiceNumber(
+          existing.businessId,
+          existing.branchId,
+          invoiceType,
+        ));
 
       const fiscalStatus: FiscalStatus = isOffline
         ? "PENDIENTE_ENVIO_ARCA"
@@ -611,6 +915,7 @@ export const usePosStore = create<PosState>()(
       const updatedSale: Sale = {
         ...existing,
         status: "PAGADA",
+        paidAt: existing.paidAt ?? timestamp,
         invoiceType,
         invoiceNumber,
         fiscalStatus,
@@ -621,27 +926,28 @@ export const usePosStore = create<PosState>()(
         updatedAt: timestamp,
         closedAt: timestamp,
       };
+      const persistedSale = await putPaidSale(updatedSale);
 
       // Crear comprobante fiscal
-      const netAmount = invoiceType === "FACTURA_A" ? Number((updatedSale.total / 1.21).toFixed(2)) : updatedSale.total;
-      const ivaAmount = invoiceType === "FACTURA_A" ? Number((updatedSale.total - netAmount).toFixed(2)) : 0;
+      const netAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total / 1.21).toFixed(2)) : persistedSale.total;
+      const ivaAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total - netAmount).toFixed(2)) : 0;
 
       const invoice: Invoice = {
         id: generateInvoiceId(),
-        saleId: updatedSale.id,
+        saleId: persistedSale.id,
         invoiceType,
         invoiceNumber,
-        businessId,
-        branchId,
-        items: structuredClone(updatedSale.items),
-        subtotal: updatedSale.subtotal,
-        discount: updatedSale.discount,
-        total: updatedSale.total,
+        businessId: persistedSale.businessId,
+        branchId: persistedSale.branchId,
+        items: structuredClone(persistedSale.items),
+        subtotal: persistedSale.subtotal,
+        discount: persistedSale.discount,
+        total: persistedSale.total,
         netAmount,
         ivaAmount,
-        paymentMethod: updatedSale.paymentMethod || "EFECTIVO",
-        cashReceived: updatedSale.cashReceived,
-        change: updatedSale.change,
+        paymentMethod: persistedSale.paymentMethod || "EFECTIVO",
+        cashReceived: persistedSale.cashReceived,
+        change: persistedSale.change,
         customer,
         fiscalStatus,
         cae,
@@ -653,19 +959,17 @@ export const usePosStore = create<PosState>()(
       // Actualizar estado en memoria reactivamente
       set((state) => ({
         queue: state.queue.filter((s) => s.id !== saleId),
-        completedSales: [updatedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
+        completedSales: [persistedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
         invoices: [invoice, ...state.invoices.filter((i) => i.saleId !== saleId)],
         paymentHistory: replacePaymentHistoryEntry(
           state.paymentHistory,
-          updatedSale,
+          persistedSale,
         ),
       }));
 
-      // Persistir en IndexedDB
       await Promise.all([
-        putSale(updatedSale),
         putInvoice(invoice),
-        updatePaymentHistory(updatedSale),
+        updatePaymentHistory(persistedSale),
       ]);
     },
 
@@ -704,8 +1008,13 @@ export const usePosStore = create<PosState>()(
         (await getSale(saleId));
       if (!existing) return;
 
+      const activeShift = await getOpenCashShift(
+        existing.businessId,
+        existing.branchId,
+      );
       const updatedSale: Sale = {
         ...existing,
+        shiftId: existing.shiftId ?? activeShift?.id,
         status: "PENDIENTE_PAGO",
         paymentMethod,
         updatedAt: timestamp,
@@ -733,7 +1042,16 @@ export const usePosStore = create<PosState>()(
         (await getSale(saleId));
       if (!existing) return;
 
-      const updatedSale = { ...existing, paymentMethod, updatedAt: timestamp };
+      const activeShift = await getOpenCashShift(
+        existing.businessId,
+        existing.branchId,
+      );
+      const updatedSale = {
+        ...existing,
+        shiftId: existing.shiftId ?? activeShift?.id,
+        paymentMethod,
+        updatedAt: timestamp,
+      };
       set((state) => ({
         queue: state.queue.map((s) =>
           s.id === saleId ? updatedSale : s,
@@ -750,21 +1068,32 @@ export const usePosStore = create<PosState>()(
       ]);
     },
 
-    cancelSale: async (saleId) => {
+    cancelSale: async (saleId, details) => {
       const timestamp = now();
       const existing =
         get().queue.find((sale) => sale.id === saleId) ||
         (await getSale(saleId));
       if (!existing) return;
+      if (existing.status === "CANCELADA") return;
 
       const updatedSale: Sale = {
         ...existing,
         status: "CANCELADA",
         updatedAt: timestamp,
         closedAt: timestamp,
+        paidAt:
+          existing.paidAt ??
+          (existing.status === "PAGADA" ? existing.closedAt ?? timestamp : undefined),
+        cancelledAt: timestamp,
+        cancelledBy: details?.cancelledBy,
+        cancellationReason: details?.cancellationReason,
       };
       set((state) => ({
         queue: state.queue.filter((s) => s.id !== saleId),
+        completedSales: [
+          updatedSale,
+          ...state.completedSales.filter((sale) => sale.id !== saleId),
+        ],
         paymentHistory: replacePaymentHistoryEntry(
           state.paymentHistory,
           updatedSale,
@@ -784,7 +1113,7 @@ export const usePosStore = create<PosState>()(
       customer,
     ) => {
       const timestamp = now();
-      const { businessId, branchId, isOffline } = get();
+      const { isOffline } = get();
 
       const existing = (await getSale(saleId)) || get().queue.find((s) => s.id === saleId);
       if (!existing) return;
@@ -796,7 +1125,11 @@ export const usePosStore = create<PosState>()(
       const change = Math.max(0, cashReceived - existing.total);
       const invoiceNumber =
         existing.invoiceNumber ||
-        (await getNextInvoiceNumber(businessId, branchId, invoiceType));
+        (await getNextInvoiceNumber(
+          existing.businessId,
+          existing.branchId,
+          invoiceType,
+        ));
 
       const fiscalStatus: FiscalStatus = isOffline
         ? "PENDIENTE_ENVIO_ARCA"
@@ -812,6 +1145,7 @@ export const usePosStore = create<PosState>()(
       const updatedSale: Sale = {
         ...existing,
         status: "PAGADA",
+        paidAt: existing.paidAt ?? timestamp,
         paymentMethod: "EFECTIVO",
         cashReceived,
         change,
@@ -823,21 +1157,22 @@ export const usePosStore = create<PosState>()(
         updatedAt: timestamp,
         closedAt: timestamp,
       };
+      const persistedSale = await putPaidSale(updatedSale);
 
-      const netAmount = invoiceType === "FACTURA_A" ? Number((updatedSale.total / 1.21).toFixed(2)) : updatedSale.total;
-      const ivaAmount = invoiceType === "FACTURA_A" ? Number((updatedSale.total - netAmount).toFixed(2)) : 0;
+      const netAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total / 1.21).toFixed(2)) : persistedSale.total;
+      const ivaAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total - netAmount).toFixed(2)) : 0;
 
       const invoice: Invoice = {
         id: generateInvoiceId(),
-        saleId: updatedSale.id,
+        saleId: persistedSale.id,
         invoiceType,
         invoiceNumber,
-        businessId,
-        branchId,
-        items: structuredClone(updatedSale.items),
-        subtotal: updatedSale.subtotal,
-        discount: updatedSale.discount,
-        total: updatedSale.total,
+        businessId: persistedSale.businessId,
+        branchId: persistedSale.branchId,
+        items: structuredClone(persistedSale.items),
+        subtotal: persistedSale.subtotal,
+        discount: persistedSale.discount,
+        total: persistedSale.total,
         netAmount,
         ivaAmount,
         paymentMethod: "EFECTIVO",
@@ -853,18 +1188,17 @@ export const usePosStore = create<PosState>()(
 
       set((state) => ({
         queue: state.queue.filter((s) => s.id !== saleId),
-        completedSales: [updatedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
+        completedSales: [persistedSale, ...state.completedSales.filter((s) => s.id !== saleId)],
         invoices: [invoice, ...state.invoices.filter((i) => i.saleId !== saleId)],
         paymentHistory: replacePaymentHistoryEntry(
           state.paymentHistory,
-          updatedSale,
+          persistedSale,
         ),
       }));
 
       await Promise.all([
-        putSale(updatedSale),
         putInvoice(invoice),
-        updatePaymentHistory(updatedSale),
+        updatePaymentHistory(persistedSale),
       ]);
     },
 

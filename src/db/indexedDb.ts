@@ -1,10 +1,25 @@
 // ─── IndexedDB – Kiosco Termas (Dexie) ──────────────────────────────────────
-// Catálogo de productos + ventas offline + comprobantes fiscales + settings.
+// Catálogo, ventas offline, comprobantes fiscales, caja y settings.
 // Resistencia offline completa: todo persiste en IndexedDB.
 
 import Dexie, { type Table } from "dexie";
-import type { Product, Sale, Invoice, InvoiceType, FiscalStatus } from "../types/pos";
+import type {
+  CashCloseSummary,
+  CashMovement,
+  CashShift,
+  PosnetReconciliationItem,
+  Product,
+  Sale,
+  Invoice,
+  InvoiceType,
+  FiscalStatus,
+  ShiftApprovalStatus,
+} from "../types/pos";
 import { seedProducts } from "../data/seedProducts";
+import {
+  buildCashCloseSummary,
+  type CashCloseDetails,
+} from "../utils/cashShiftUtils";
 
 /* ══════════════════════════════════════════════════════════════════════════════
    Schema
@@ -21,6 +36,9 @@ class PosDatabase extends Dexie {
   paymentHistory!: Table<Sale, string>;
   invoices!: Table<Invoice, string>;
   settings!: Table<SettingRecord, string>;
+  cashShifts!: Table<CashShift, string>;
+  cashMovements!: Table<CashMovement, string>;
+  cashCloseSummaries!: Table<CashCloseSummary, string>;
 
   constructor() {
     super("KioscoTermasPOS");
@@ -49,6 +67,96 @@ class PosDatabase extends Dexie {
       invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
       settings: "key",
     });
+
+    this.version(5).stores({
+      products: "id, [businessId+branchId], [businessId+branchId+category], category, barcode",
+      sales: "id, [businessId+branchId], [businessId+branchId+status], [businessId+branchId+shiftId], shiftId, status, createdAt",
+      paymentHistory: "id, [businessId+branchId]",
+      invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
+      settings: "key",
+      cashShifts: "id, &[businessId+branchId+shiftNumber], [businessId+branchId+status]",
+      cashMovements: "id, shiftId, [businessId+branchId], [businessId+branchId+shiftId]",
+      cashCloseSummaries: "id, &shiftId, [businessId+branchId], [businessId+branchId+closedAt]",
+    });
+
+    this.version(6)
+      .stores({
+        products: "id, [businessId+branchId], [businessId+branchId+category], category, barcode",
+        sales: "id, [businessId+branchId], [businessId+branchId+status], [businessId+branchId+shiftId], [businessId+branchId+settledInShiftId], shiftId, settledInShiftId, status, createdAt",
+        paymentHistory: "id, [businessId+branchId]",
+        invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
+        settings: "key",
+        cashShifts: "id, &[businessId+branchId+shiftNumber], [businessId+branchId+status]",
+        cashMovements: "id, shiftId, [businessId+branchId], [businessId+branchId+shiftId]",
+        cashCloseSummaries: "id, &shiftId, [businessId+branchId], [businessId+branchId+closedAt]",
+      })
+      .upgrade(async (transaction) => {
+        const shiftsTable = transaction.table("cashShifts");
+        const movementsTable = transaction.table("cashMovements");
+        const summariesTable = transaction.table("cashCloseSummaries");
+        const [shifts, movements, summaries] = await Promise.all([
+          shiftsTable.toArray(),
+          movementsTable.toArray(),
+          summariesTable.toArray(),
+        ]);
+        const normalizedMovements = movements.map((movement) => ({
+          ...movement,
+          createdBy: movement.createdBy ?? movement.performedBy ?? "",
+        }));
+        const movementsByShift = new Map<string, typeof movements>();
+        const summariesByShift = new Map<string, (typeof summaries)[number]>();
+
+        for (const movement of normalizedMovements) {
+          const shiftMovements = movementsByShift.get(movement.shiftId) ?? [];
+          shiftMovements.push(movement);
+          movementsByShift.set(movement.shiftId, shiftMovements);
+        }
+        for (const summary of summaries) {
+          summariesByShift.set(summary.shiftId, summary);
+        }
+
+        const normalizedSummaries = summaries.map((summary) => ({
+          ...summary,
+          salesCountPaid: summary.salesCountPaid ?? summary.paidSaleCount ?? 0,
+          salesCountCancelled:
+            summary.salesCountCancelled ?? summary.cancelledSaleCount ?? 0,
+          totalCancelledAmount:
+            summary.totalCancelledAmount ?? summary.cancelledGrossAmount ?? 0,
+          totalsByPayment:
+            summary.totalsByPayment ?? summary.collectedByPaymentMethod ?? {
+              EFECTIVO: 0,
+              QR: 0,
+              TARJETA: 0,
+            },
+          cashInTotal: summary.cashInTotal ?? 0,
+          withdrawalsTotal:
+            summary.withdrawalsTotal ?? summary.withdrawalTotal ?? 0,
+          expensesTotal: summary.expensesTotal ?? summary.expenseTotal ?? 0,
+          posnetItems: summary.posnetItems ?? [],
+          reconciliationPending: summary.reconciliationPending ?? false,
+          approvalStatus: summary.approvalStatus ?? "NOT_REQUIRED",
+          latePaymentsCount: summary.latePaymentsCount ?? 0,
+          latePaymentsAmount: summary.latePaymentsAmount ?? 0,
+        }));
+        const normalizedSummariesByShift = new Map(
+          normalizedSummaries.map((summary) => [summary.shiftId, summary]),
+        );
+
+        await Promise.all([
+          shiftsTable.bulkPut(
+            shifts.map((shift) => ({
+              ...shift,
+              movements: movementsByShift.get(shift.id) ?? [],
+              closeSummary:
+                shift.closeSummary ??
+                normalizedSummariesByShift.get(shift.id) ??
+                summariesByShift.get(shift.id),
+            })),
+          ),
+          movementsTable.bulkPut(normalizedMovements),
+          summariesTable.bulkPut(normalizedSummaries),
+        ]);
+      });
   }
 }
 
@@ -352,9 +460,13 @@ export function getCompletedSales(
 ): Promise<Sale[]> {
   return db.sales
     .where("[businessId+branchId+status]")
-    .equals([businessId, branchId, "PAGADA"])
-    .reverse()
-    .sortBy("closedAt");
+    .anyOf(
+      [
+        [businessId, branchId, "PAGADA"],
+        [businessId, branchId, "CANCELADA"],
+      ],
+    )
+    .toArray();
 }
 
 export function getQueuedSales(
@@ -400,6 +512,443 @@ export async function updatePaymentHistory(sale: Sale): Promise<void> {
   if (await db.paymentHistory.get(sale.id)) {
     await db.paymentHistory.put(sale);
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Cash shifts, movements & close summaries
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+export function getCashShift(id: string): Promise<CashShift | undefined> {
+  return db.cashShifts.get(id);
+}
+
+export function getCashShifts(
+  businessId: string,
+  branchId: string,
+): Promise<CashShift[]> {
+  return db.cashShifts
+    .where("[businessId+branchId]")
+    .equals([businessId, branchId])
+    .toArray();
+}
+
+export function getOpenCashShift(
+  businessId: string,
+  branchId: string,
+): Promise<CashShift | undefined> {
+  return db.cashShifts
+    .where("[businessId+branchId+status]")
+    .equals([businessId, branchId, "OPEN"])
+    .first();
+}
+
+function validateNewCashShift(shift: Omit<CashShift, "shiftNumber">): void {
+  if (shift.status !== "OPEN") {
+    throw new Error("Un turno nuevo debe comenzar abierto");
+  }
+  if (!shift.id.trim() || !shift.openedBy.trim()) {
+    throw new Error("El turno requiere id y cajero");
+  }
+  if (!Number.isFinite(shift.openingCash) || shift.openingCash < 0) {
+    throw new RangeError("El fondo inicial debe ser un importe no negativo");
+  }
+}
+
+async function getNextShiftNumber(
+  businessId: string,
+  branchId: string,
+): Promise<string> {
+  const shifts = await getCashShifts(businessId, branchId);
+  const maxNumber = shifts.reduce((max, shift) => {
+    if (!/^\d+$/.test(shift.shiftNumber)) return max;
+    return Math.max(max, Number(shift.shiftNumber));
+  }, 0);
+  return String(Math.max(maxNumber + 1, shifts.length + 1));
+}
+
+async function assignUnsettledPaymentsToShift(
+  shift: CashShift,
+): Promise<void> {
+  const [sales, shifts, history] = await Promise.all([
+    db.sales
+      .where("[businessId+branchId]")
+      .equals([shift.businessId, shift.branchId])
+      .toArray(),
+    getCashShifts(shift.businessId, shift.branchId),
+    db.paymentHistory
+      .where("[businessId+branchId]")
+      .equals([shift.businessId, shift.branchId])
+      .toArray(),
+  ]);
+  const shiftsById = new Map(shifts.map((item) => [item.id, item]));
+  const updates = sales
+    .filter((sale) => {
+      if (
+        sale.status !== "PAGADA" ||
+        sale.settledInShiftId ||
+        !sale.shiftId ||
+        !sale.paidAt
+      ) {
+        return false;
+      }
+      const originShift = shiftsById.get(sale.shiftId);
+      return (
+        originShift?.status === "CLOSED" &&
+        !!originShift.closedAt &&
+        Date.parse(sale.paidAt) > Date.parse(originShift.closedAt)
+      );
+    })
+    .map((sale) => ({ ...sale, settledInShiftId: shift.id }));
+
+  if (updates.length === 0) return;
+  await db.sales.bulkPut(updates);
+  const historyIds = new Set(history.map((sale) => sale.id));
+  await db.paymentHistory.bulkPut(
+    updates.filter((sale) => historyIds.has(sale.id)),
+  );
+}
+
+async function putOpenCashShiftInTransaction(
+  shift: CashShift,
+): Promise<CashShift> {
+  if (!shift.shiftNumber.trim()) {
+    throw new Error("El turno requiere número");
+  }
+  const openShift = await getOpenCashShift(shift.businessId, shift.branchId);
+  if (openShift && openShift.id !== shift.id) {
+    throw new Error("Ya existe un turno abierto para esta sucursal");
+  }
+
+  const existing = await db.cashShifts.get(shift.id);
+  if (existing?.status === "CLOSED") {
+    throw new Error("No se puede reabrir un turno cerrado");
+  }
+  const persistedShift = {
+    ...shift,
+    movements:
+      shift.movements.length > 0
+        ? shift.movements
+        : existing?.movements ?? [],
+  };
+  await db.cashShifts.put(persistedShift);
+  await assignUnsettledPaymentsToShift(persistedShift);
+  return persistedShift;
+}
+
+export async function createCashShift(
+  shift: Omit<CashShift, "shiftNumber">,
+): Promise<CashShift> {
+  validateNewCashShift(shift);
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.sales,
+    db.paymentHistory,
+    async () => {
+      const shiftNumber = await getNextShiftNumber(
+        shift.businessId,
+        shift.branchId,
+      );
+      return putOpenCashShiftInTransaction({ ...shift, shiftNumber });
+    },
+  );
+}
+
+export async function openCashShift(shift: CashShift): Promise<string> {
+  validateNewCashShift(shift);
+  if (!shift.shiftNumber.trim()) throw new Error("El turno requiere número");
+
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.sales,
+    db.paymentHistory,
+    async () => (await putOpenCashShiftInTransaction(shift)).id,
+  );
+}
+
+export function getCashMovements(
+  businessId: string,
+  branchId: string,
+  shiftId: string,
+): Promise<CashMovement[]> {
+  return db.cashMovements
+    .where("[businessId+branchId+shiftId]")
+    .equals([businessId, branchId, shiftId])
+    .toArray();
+}
+
+export async function recordCashMovement(
+  movement: CashMovement,
+): Promise<string> {
+  if (!Number.isFinite(movement.amount) || movement.amount <= 0) {
+    throw new RangeError("El importe del movimiento debe ser mayor que cero");
+  }
+  const createdBy = movement.createdBy || movement.performedBy || "";
+  if (!movement.reason.trim() || !createdBy.trim()) {
+    throw new Error("El movimiento requiere motivo y responsable");
+  }
+  const persistedMovement = { ...movement, createdBy };
+
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.cashMovements,
+    db.sales,
+    async () => {
+      const shift = await db.cashShifts.get(movement.shiftId);
+      if (!shift || shift.status !== "OPEN") {
+        throw new Error("Sólo se pueden registrar movimientos en un turno abierto");
+      }
+      if (
+        shift.businessId !== movement.businessId ||
+        shift.branchId !== movement.branchId
+      ) {
+        throw new Error("El movimiento no pertenece al negocio y sucursal del turno");
+      }
+
+      if (movement.relatedSaleId) {
+        if (movement.type !== "WITHDRAWAL") {
+          throw new Error("Sólo un retiro puede estar vinculado a una venta");
+        }
+        const sale = await db.sales.get(movement.relatedSaleId);
+        const wasPaid = sale?.status === "PAGADA" ||
+          (sale?.status === "CANCELADA" && sale.paidAt !== undefined);
+        if (
+          !sale ||
+          sale.shiftId !== shift.id ||
+          sale.businessId !== shift.businessId ||
+          sale.branchId !== shift.branchId ||
+          sale.paymentMethod !== "EFECTIVO" ||
+          !wasPaid
+        ) {
+          throw new Error("El reembolso debe referenciar una venta cobrada en efectivo del turno");
+        }
+      }
+
+      const movementId = await db.cashMovements.add(persistedMovement);
+      await db.cashShifts.put({
+        ...shift,
+        movements: [...(shift.movements ?? []), persistedMovement],
+      });
+      return movementId;
+    },
+  );
+}
+
+export function getCashCloseSummary(
+  shiftId: string,
+): Promise<CashCloseSummary | undefined> {
+  return db.cashCloseSummaries.where("shiftId").equals(shiftId).first();
+}
+
+function validatePosnetItems(items: PosnetReconciliationItem[]): void {
+  for (const item of items) {
+    if (
+      !item.id.trim() ||
+      !item.label.trim() ||
+      !Number.isFinite(item.systemAmount) ||
+      item.systemAmount < 0 ||
+      !Number.isFinite(item.declaredAmount) ||
+      item.declaredAmount < 0
+    ) {
+      throw new Error("Los datos de conciliación POSNET/QR no son válidos");
+    }
+  }
+}
+
+export async function closeCashShift(
+  shiftId: string,
+  details: CashCloseDetails,
+): Promise<CashCloseSummary> {
+  validatePosnetItems(details.posnetItems ?? []);
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.cashMovements,
+    db.cashCloseSummaries,
+    db.sales,
+    async () => {
+      return closeCashShiftInTransaction(shiftId, details);
+    },
+  );
+}
+
+async function closeCashShiftInTransaction(
+  shiftId: string,
+  details: CashCloseDetails,
+): Promise<CashCloseSummary> {
+  const shift = await db.cashShifts.get(shiftId);
+  if (!shift) throw new Error("No se encontró el turno");
+  if (shift.status !== "OPEN") throw new Error("El turno ya está cerrado");
+
+  const [shiftSales, lateSales, movements] = await Promise.all([
+    db.sales
+      .where("[businessId+branchId+shiftId]")
+      .equals([shift.businessId, shift.branchId, shift.id])
+      .toArray(),
+    db.sales
+      .where("[businessId+branchId+settledInShiftId]")
+      .equals([shift.businessId, shift.branchId, shift.id])
+      .toArray(),
+    getCashMovements(shift.businessId, shift.branchId, shift.id),
+  ]);
+  const sales = [
+    ...new Map(
+      [...shiftSales, ...lateSales].map((sale) => [sale.id, sale]),
+    ).values(),
+  ];
+  const summary = buildCashCloseSummary(shift, sales, movements, details);
+
+  await db.cashCloseSummaries.add(summary);
+  await db.cashShifts.put({
+    ...shift,
+    status: "CLOSED",
+    closedAt: details.closedAt,
+    closedBy: details.closedBy,
+    closeSummaryId: details.id,
+    closeSummary: summary,
+  });
+  return summary;
+}
+
+export async function relayCashShift(
+  shiftId: string,
+  details: CashCloseDetails,
+  nextShift: Omit<CashShift, "shiftNumber">,
+): Promise<{ closedShift: CashShift; openedShift: CashShift; summary: CashCloseSummary }> {
+  validateNewCashShift(nextShift);
+  validatePosnetItems(details.posnetItems ?? []);
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.cashMovements,
+    db.cashCloseSummaries,
+    db.sales,
+    db.paymentHistory,
+    async () => {
+      const outgoingShift = await db.cashShifts.get(shiftId);
+      if (!outgoingShift) throw new Error("No se encontró el turno");
+      if (outgoingShift.status !== "OPEN") {
+        throw new Error("El turno ya está cerrado");
+      }
+      if (
+        outgoingShift.businessId !== nextShift.businessId ||
+        outgoingShift.branchId !== nextShift.branchId
+      ) {
+        throw new Error("El relevo debe permanecer en el mismo negocio y sucursal");
+      }
+
+      const summary = await closeCashShiftInTransaction(shiftId, details);
+      const shiftNumber = await getNextShiftNumber(
+        nextShift.businessId,
+        nextShift.branchId,
+      );
+      const openedShift = await putOpenCashShiftInTransaction({
+        ...nextShift,
+        shiftNumber,
+      });
+      const closedShift = {
+        ...outgoingShift,
+        status: "CLOSED" as const,
+        closedAt: details.closedAt,
+        closedBy: details.closedBy,
+        closeSummaryId: details.id,
+        closeSummary: summary,
+      };
+      return { closedShift, openedShift, summary };
+    },
+  );
+}
+
+export async function updateCashShiftReconciliation(
+  shiftId: string,
+  posnetItems: PosnetReconciliationItem[],
+  reconciliationPending: boolean,
+): Promise<CashShift> {
+  validatePosnetItems(posnetItems);
+
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.cashCloseSummaries,
+    async () => {
+      const shift = await db.cashShifts.get(shiftId);
+      if (!shift) throw new Error("No se encontró el turno");
+      if (shift.status !== "CLOSED" || !shift.closeSummary) {
+        throw new Error("La conciliación sólo se actualiza en turnos cerrados");
+      }
+      const summary: CashCloseSummary = {
+        ...shift.closeSummary,
+        posnetItems: structuredClone(posnetItems),
+        reconciliationPending,
+      };
+      await db.cashCloseSummaries.put(summary);
+      const updatedShift = { ...shift, closeSummary: summary };
+      await db.cashShifts.put(updatedShift);
+      return updatedShift;
+    },
+  );
+}
+
+export async function updateCashShiftApproval(
+  shiftId: string,
+  approvalStatus: Exclude<ShiftApprovalStatus, "NOT_REQUIRED">,
+  resolvedBy: string,
+  note?: string,
+): Promise<CashShift> {
+  if (!resolvedBy.trim()) throw new Error("La aprobación requiere responsable");
+  if (!["APPROVED", "OBSERVED", "PENDING"].includes(approvalStatus)) {
+    throw new Error("Estado de aprobación inválido");
+  }
+
+  return db.transaction(
+    "rw",
+    db.cashShifts,
+    db.cashCloseSummaries,
+    async () => {
+      const shift = await db.cashShifts.get(shiftId);
+      if (!shift) throw new Error("No se encontró el turno");
+      if (shift.status !== "CLOSED" || !shift.closeSummary) {
+        throw new Error("La aprobación sólo se actualiza en turnos cerrados");
+      }
+      const summary: CashCloseSummary = {
+        ...shift.closeSummary,
+        approvalStatus,
+        approvedBy: resolvedBy.trim(),
+        approvedAt: new Date().toISOString(),
+        ...(note !== undefined
+          ? { observations: note.trim() }
+          : {}),
+      };
+      await db.cashCloseSummaries.put(summary);
+      const updatedShift = { ...shift, closeSummary: summary };
+      await db.cashShifts.put(updatedShift);
+      return updatedShift;
+    },
+  );
+}
+
+export async function putPaidSale(sale: Sale): Promise<Sale> {
+  return db.transaction("rw", db.sales, db.cashShifts, async () => {
+    const activeShift = await getOpenCashShift(sale.businessId, sale.branchId);
+    let attributedSale = sale;
+    if (activeShift) {
+      if (!sale.shiftId) {
+        attributedSale = { ...sale, shiftId: activeShift.id };
+      } else if (sale.shiftId !== activeShift.id) {
+        const originShift = await db.cashShifts.get(sale.shiftId);
+        if (originShift?.status === "CLOSED") {
+          attributedSale = {
+            ...sale,
+            settledInShiftId: activeShift.id,
+          };
+        }
+      }
+    }
+    await db.sales.put(attributedSale);
+    return attributedSale;
+  });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
