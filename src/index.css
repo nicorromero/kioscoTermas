@@ -1,5 +1,160 @@
 @import "tailwindcss";
 
+[data-theme="arena"] {
+  color-scheme: light;
+  --color-slate-950: #f8f5ed;
+  --color-slate-900: #f1eadb;
+  --color-slate-800: #e6dcc8;
+  --color-slate-700: #d3c4a8;
+  --color-slate-600: #a79572;
+  --color-slate-500: #67583e;
+  --color-slate-400: #67583e;
+  --color-slate-300: #584c37;
+  --color-slate-200: #443b2d;
+  --color-slate-100: #322b20;
+  --color-white: #322b20;
+  --color-blue-950: #f1e8d6;
+  --color-blue-900: #e1d3b6;
+  --color-blue-800: #c5b18a;
+  --color-blue-400: #2f5b75;
+  --color-blue-300: #345b76;
+  --color-blue-200: #40596c;
+  --color-emerald-950: #e3eee0;
+  --color-emerald-900: #d8e8d4;
+  --color-emerald-800: #c5dbbf;
+  --color-amber-950: #f7ecd5;
+  --color-amber-900: #f0dfbb;
+  --color-amber-800: #e5d09c;
+  --color-rose-950: #f7e7e3;
+  --color-rose-900: #f1d8d2;
+  --color-rose-800: #e4bfb6;
+  --color-purple-950: #eee7f4;
+  --color-purple-900: #e4d8ed;
+  --color-purple-800: #d2c0e0;
+  --color-cyan-950: #e3eef1;
+  --color-cyan-900: #d3e4e8;
+  --color-cyan-800: #b9d1d9;
+}
+
+[data-theme="arena"] [class~="bg-slate-850"] {
+  background-color: #ece3d1;
+}
+
+[data-theme="arena"] [class~="hover:bg-slate-850"]:hover {
+  background-color: #e3d9c5;
+}
+
+[data-theme="arena"] [class~="hover:bg-slate-750"]:hover {
+  background-color: #e3d9c5;
+}
+
+[data-theme="arena"] .text-slate-950,
+[data-theme="arena"] .text-slate-900 {
+  color: #322b20;
+}
+
+[data-theme="arena"] .text-slate-700,
+[data-theme="arena"] .text-slate-600 {
+  color: #67583e;
+}
+
+[data-theme="arena"] :is(
+  .text-emerald-100,
+  .text-emerald-200,
+  .text-emerald-300,
+  .text-emerald-400,
+  .text-emerald-700,
+  .text-emerald-800,
+  .text-emerald-900,
+  [class~="text-emerald-300/80"],
+  [class~="text-emerald-400/90"]
+) {
+  color: #2e633b;
+}
+
+[data-theme="arena"] :is(
+  .text-amber-100,
+  .text-amber-200,
+  .text-amber-300,
+  .text-amber-400,
+  .text-amber-500,
+  .text-amber-600,
+  .text-amber-800,
+  .text-amber-950,
+  [class~="text-amber-200/80"],
+  [class~="text-amber-300/80"]
+) {
+  color: #77500f;
+}
+
+[data-theme="arena"] :is(
+  .text-rose-100,
+  .text-rose-200,
+  .text-rose-300,
+  .text-rose-400,
+  .text-rose-700
+) {
+  color: #843b39;
+}
+
+[data-theme="arena"] :is(
+  .text-purple-100,
+  .text-purple-200,
+  .text-purple-300,
+  .text-purple-400,
+  .text-purple-600,
+  [class~="text-purple-300/80"]
+) {
+  color: #604176;
+}
+
+[data-theme="arena"] :is(.text-cyan-200, .text-cyan-400) {
+  color: #285d6a;
+}
+
+[data-theme="arena"] .text-sky-200 {
+  color: #315a73;
+}
+
+[data-theme="arena"] :is(
+  [class~="hover:text-amber-100"],
+  [class~="hover:text-amber-400"]
+):hover {
+  color: #77500f;
+}
+
+[data-theme="arena"] :is(
+  [class~="hover:text-emerald-400"]
+):hover {
+  color: #2e633b;
+}
+
+[data-theme="arena"] :is(
+  [class~="hover:text-purple-200"]
+):hover {
+  color: #604176;
+}
+
+[data-theme="arena"] :is(
+  [class~="hover:text-rose-300"],
+  [class~="hover:text-rose-400"]
+):hover {
+  color: #843b39;
+}
+
+[data-theme="arena"] :is(.bg-emerald-500, .bg-emerald-600, .bg-emerald-700, .bg-purple-600, .bg-rose-700).text-white {
+  color: #fff;
+}
+
+[data-theme="arena"] [class~="bg-slate-950/80"],
+[data-theme="arena"] [class~="bg-slate-950/85"] {
+  background-color: rgb(48 42 31 / 78%);
+}
+
+[data-theme="arena"] [class~="bg-slate-950/70"] {
+  background-color: rgb(48 42 31 / 68%);
+}
+
 html, body, #root {
   height: 100vh;
   width: 100vw;

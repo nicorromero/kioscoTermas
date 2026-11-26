@@ -8,10 +8,13 @@ import {
   FileText,
   Smartphone,
   Layers,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { usePosStore } from "../store/usePosStore";
 
 export type PosDemoView = "caja" | "facturacion" | "dueno";
+export type PosColorTheme = "dark" | "arena";
 
 interface HeaderProps {
   activeView: PosDemoView;
@@ -19,6 +22,8 @@ interface HeaderProps {
   onToggleSimulation: () => void;
   simulationOpen: boolean;
   queuedCount: number;
+  colorTheme: PosColorTheme;
+  onToggleColorTheme: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -27,6 +32,8 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleSimulation,
   simulationOpen,
   queuedCount,
+  colorTheme,
+  onToggleColorTheme,
 }) => {
   const businessId = usePosStore((s) => s.businessId);
   const branchId = usePosStore((s) => s.branchId);
@@ -166,6 +173,30 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Botón Simulador QR / Webhooks */}
         <button
+          type="button"
+          onClick={onToggleColorTheme}
+          aria-label={
+            colorTheme === "arena"
+              ? "Cambiar al tema azul oscuro"
+              : "Cambiar al tema arena"
+          }
+          aria-pressed={colorTheme === "arena"}
+          title={
+            colorTheme === "arena"
+              ? "Cambiar al tema azul oscuro"
+              : "Cambiar al tema arena"
+          }
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/90 text-slate-200 transition-colors hover:bg-slate-700"
+        >
+          {colorTheme === "arena" ? (
+            <Moon className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <Sun className="h-4 w-4" aria-hidden="true" />
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={onToggleSimulation}
           className={`flex items-center gap-1.5 text-xs px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition-all border ${
             simulationOpen

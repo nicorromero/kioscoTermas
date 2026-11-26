@@ -9,7 +9,11 @@ import type {
   FiscalCustomer,
 } from "./types/pos";
 
-import { Header, type PosDemoView } from "./components/Header";
+import {
+  Header,
+  type PosColorTheme,
+  type PosDemoView,
+} from "./components/Header";
 import { CatalogColumn } from "./components/CatalogColumn";
 import { CartColumn } from "./components/CartColumn";
 import { QueueColumn } from "./components/QueueColumn";
@@ -19,12 +23,28 @@ import { SimulationPanel } from "./components/SimulationPanel";
 import { BillingOfflineView } from "./components/BillingOfflineView";
 import { OwnerMobileView } from "./components/OwnerMobileView";
 import { CashShiftManager } from "./components/CashShiftManager";
+<<<<<<< HEAD
+=======
+
+function readColorThemePreference(): PosColorTheme {
+  try {
+    return window.localStorage.getItem("kioscoTermas:theme") === "arena"
+      ? "arena"
+      : "dark";
+  } catch (error) {
+    console.error("No se pudo leer la preferencia de tema.", error);
+    return "dark";
+  }
+}
+>>>>>>> agents/caja-kiosco-turnos-movimientos-cierre
 
 export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // ── Navegación "Modo Demo" (3 Vistas) ──
   const [activeView, setActiveView] = useState<PosDemoView>("caja");
+  const [colorTheme, setColorTheme] =
+    useState<PosColorTheme>(readColorThemePreference);
 
   // ── Store State & Actions ──
   const hydrate = usePosStore((s) => s.hydrate);
@@ -73,6 +93,15 @@ export function App() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = colorTheme;
+    try {
+      window.localStorage.setItem("kioscoTermas:theme", colorTheme);
+    } catch (error) {
+      console.error("No se pudo guardar la preferencia de tema.", error);
+    }
+  }, [colorTheme]);
 
   // Manejadores del Drawer de Productos
   const handleOpenNewProduct = useCallback(() => {
@@ -239,7 +268,10 @@ export function App() {
 
   if (!catalogReady) {
     return (
-      <div className="h-full flex items-center justify-center bg-slate-950 text-white font-mono gap-3">
+      <div
+        data-theme={colorTheme}
+        className="h-full flex items-center justify-center bg-slate-950 text-white font-mono gap-3"
+      >
         <span className="w-4 h-4 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin" />
         <span>Iniciando Catálogo e IndexedDB...</span>
       </div>
@@ -247,7 +279,10 @@ export function App() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div
+      data-theme={colorTheme}
+      className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans"
+    >
       {/* ── Barra Superior ("Modo Demo" con Selector de 3 Vistas) ── */}
       <Header
         activeView={activeView}
@@ -255,6 +290,12 @@ export function App() {
         onToggleSimulation={() => setIsSimulationOpen(!isSimulationOpen)}
         simulationOpen={isSimulationOpen}
         queuedCount={queue.length}
+        colorTheme={colorTheme}
+        onToggleColorTheme={() =>
+          setColorTheme((currentTheme) =>
+            currentTheme === "arena" ? "dark" : "arena"
+          )
+        }
       />
 
       {rejectedCount > 0 && (
