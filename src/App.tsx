@@ -23,6 +23,7 @@ import { SimulationPanel } from "./components/SimulationPanel";
 import { BillingOfflineView } from "./components/BillingOfflineView";
 import { OwnerMobileView } from "./components/OwnerMobileView";
 import { CashShiftManager } from "./components/CashShiftManager";
+import { BuzzerPrintDrawer } from "./components/BuzzerPrintDrawer";
 
 function readColorThemePreference(): PosColorTheme {
   try {
@@ -54,6 +55,10 @@ export function App() {
   const selectedLineKey = usePosStore((s) => s.selectedLineKey);
   const queue = usePosStore((s) => s.queue);
   const paymentHistory = usePosStore((s) => s.paymentHistory);
+  const activeOperator = usePosStore((s) => s.activeOperator);
+  const activeBuzzers = usePosStore((s) => s.activeBuzzers);
+  const printJobs = usePosStore((s) => s.printJobs);
+  const completedSales = usePosStore((s) => s.completedSales);
 
   const addToCartStore = usePosStore((s) => s.addToCart);
   const selectCartLine = usePosStore((s) => s.selectCartLine);
@@ -71,6 +76,9 @@ export function App() {
   const cancelSale = usePosStore((s) => s.cancelSale);
   const recoverSaleToCart = usePosStore((s) => s.recoverSaleToCart);
   const recordCashPayment = usePosStore((s) => s.recordCashPayment);
+  const setActiveOperator = usePosStore((s) => s.setActiveOperator);
+  const releaseBuzzer = usePosStore((s) => s.releaseBuzzer);
+  const retryPrintJob = usePosStore((s) => s.retryPrintJob);
 
   // ── Estado UI Local ──
   const [configuringProduct, setConfiguringProduct] = useState<Product | null>(null);
@@ -79,6 +87,8 @@ export function App() {
   const [isSimulationOpen, setIsSimulationOpen] = useState(false);
   const [isProductDrawerOpen, setIsProductDrawerOpen] = useState(false);
   const [isCashShiftDialogOpen, setIsCashShiftDialogOpen] = useState(false);
+  const [isBuzzerPanelOpen, setIsBuzzerPanelOpen] = useState(false);
+  const [catalogIndex, setCatalogIndex] = useState(0);
   const [drawerTargetProduct, setDrawerTargetProduct] = useState<Product | null>(null);
   const [isQueueExpanded, setIsQueueExpanded] = useState(false);
 
@@ -180,6 +190,10 @@ export function App() {
 
   // Atajo Esc: Cierra modales/paneles sin tocar el carrito
   const handleEscape = useCallback(() => {
+    if (isBuzzerPanelOpen) {
+      setIsBuzzerPanelOpen(false);
+      return;
+    }
     if (isProductDrawerOpen) {
       setIsProductDrawerOpen(false);
       setDrawerTargetProduct(null);
@@ -201,7 +215,7 @@ export function App() {
       setIsSimulationOpen(false);
       return;
     }
-  }, [isProductDrawerOpen, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct, isSimulationOpen]);
+  }, [isProductDrawerOpen, isPaymentModalOpen, isQuickCashModalOpen, configuringProduct, isSimulationOpen, isBuzzerPanelOpen]);
 
   // Atajo F8: Abrir cobro normal (QR, Tarjeta, Efectivo)
   const handleOpenCheckout = useCallback(() => {
@@ -215,6 +229,38 @@ export function App() {
     setIsQuickCashModalOpen(true);
   }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen]);
 
+  const handleToggleOperator = useCallback(() => {
+    setActiveOperator(
+      activeOperator === "Operador 1" ? "Operador 2" : "Operador 1",
+    );
+  }, [activeOperator, setActiveOperator]);
+
+  const handleSendToQr = useCallback(async (qrAccountId: "QR_1" | "QR_2") => {
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen) return;
+    await submitSaleStore(
+      "QR",
+      undefined,
+      "FACTURA_B",
+      undefined,
+      undefined,
+      qrAccountId,
+    );
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, submitSaleStore]);
+
+  const handleNavigateCatalog = useCallback((direction: "UP" | "DOWN") => {
+    if (products.length === 0) return;
+    setCatalogIndex((current) => {
+      const next = direction === "UP" ? current - 1 : current + 1;
+      return (next + products.length) % products.length;
+    });
+  }, [products.length]);
+
+  const handleEnterCatalogSelection = useCallback(() => {
+    if (products.length === 0 || isProductDrawerOpen) return;
+    const product = products[catalogIndex % products.length];
+    if (product) addToCartStore(product);
+  }, [addToCartStore, catalogIndex, isProductDrawerOpen, products]);
+
   // Registro de atajos de teclado (deshabilitados fuera de la vista Caja o con Drawer abierto)
   usePosShortcuts({
     searchInputRef,
@@ -223,6 +269,12 @@ export function App() {
     onEscape: handleEscape,
     onIncrementLastItem: handleIncrementLastItem,
     onDecrementLastItem: handleDecrementLastItem,
+    onToggleOperator: handleToggleOperator,
+    onSendToQr1: () => void handleSendToQr("QR_1"),
+    onSendToQr2: () => void handleSendToQr("QR_2"),
+    onOpenBuzzerPanel: () => setIsBuzzerPanelOpen(true),
+    onNavigateCatalog: handleNavigateCatalog,
+    onEnterCatalogSelection: handleEnterCatalogSelection,
     disabled: activeView !== "caja" || isProductDrawerOpen || isCashShiftDialogOpen,
   });
 
@@ -232,14 +284,18 @@ export function App() {
     notes?: string,
     cashReceived?: number,
     invoiceType: InvoiceType = "FACTURA_B",
-    customer?: FiscalCustomer
+    customer?: FiscalCustomer,
+    qrAccountId?: "QR_1" | "QR_2",
+    buzzerNumber?: string,
   ) => {
     const sale = await submitSaleStore(
       method,
       notes,
       invoiceType,
       customer,
-      cashReceived
+      cashReceived,
+      qrAccountId,
+      buzzerNumber,
     );
     // Si fue en efectivo con dinero recibido, liquidar y emitir factura inmediatamente
     if (method === "EFECTIVO" && cashReceived !== undefined) {
@@ -293,6 +349,7 @@ export function App() {
             currentTheme === "arena" ? "dark" : "arena"
           )
         }
+        onOpenBuzzerPanel={() => setIsBuzzerPanelOpen(true)}
       />
 
       {rejectedCount > 0 && (
@@ -397,6 +454,16 @@ export function App() {
         cartDiscount={cartDiscount}
         itemCount={cart.reduce((sum, i) => sum + i.qty, 0)}
         onConfirmQuickCash={handleConfirmQuickCash}
+      />
+
+      <BuzzerPrintDrawer
+        isOpen={isBuzzerPanelOpen}
+        onClose={() => setIsBuzzerPanelOpen(false)}
+        activeBuzzers={activeBuzzers}
+        printJobs={printJobs}
+        sales={[...completedSales, ...queue, ...paymentHistory]}
+        onRelease={(number) => void releaseBuzzer(number)}
+        onRetry={(jobId) => void retryPrintJob(jobId)}
       />
 
       {/* ── Panel Flotante de Simulación QR / Webhooks ── */}

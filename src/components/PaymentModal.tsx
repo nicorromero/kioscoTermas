@@ -26,6 +26,8 @@ interface PaymentModalProps {
     cashReceived?: number,
     invoiceType?: InvoiceType,
     customer?: FiscalCustomer,
+    qrAccountId?: "QR_1" | "QR_2",
+    buzzerNumber?: string,
   ) => Promise<void>;
 }
 
@@ -38,6 +40,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   onSubmitSale,
 }) => {
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>("QR");
+  const [qrAccountId, setQrAccountId] = useState<"QR_1" | "QR_2">("QR_1");
+  const [buzzerNumber, setBuzzerNumber] = useState("");
   const [invoiceType, setInvoiceType] = useState<InvoiceType>("FACTURA_B");
   const [cuitInput, setCuitInput] = useState("");
   const [businessName, setBusinessName] = useState("");
@@ -97,6 +101,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         cash,
         invoiceType,
         customer,
+        selectedMethod === "QR" ? qrAccountId : undefined,
+        buzzerNumber.trim() || undefined,
       );
       onClose();
     } finally {
@@ -189,6 +195,39 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                   </button>
                 );
               })}
+            </div>
+            {selectedMethod === "QR" && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                {([
+                  ["QR_1", "QR 1 - Caja Principal"],
+                  ["QR_2", "QR 2 - Barra / Auxiliar"],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setQrAccountId(id)}
+                    className={`px-3 py-2 rounded-lg border text-xs font-bold ${
+                      qrAccountId === id
+                        ? "border-purple-400 bg-purple-950/50 text-purple-200"
+                        : "border-slate-800 bg-slate-950 text-slate-400"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-2 flex items-center gap-2">
+              <label className="text-[11px] text-slate-400">Llamador manual (01-50):</label>
+              <input
+                value={buzzerNumber}
+                onChange={(event) =>
+                  setBuzzerNumber(event.target.value.replace(/\D/g, "").slice(0, 2))
+                }
+                inputMode="numeric"
+                className="w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-center font-mono text-sm text-amber-300"
+                placeholder="Auto"
+              />
             </div>
           </div>
 

@@ -14,6 +14,9 @@ import type {
   InvoiceType,
   FiscalStatus,
   ShiftApprovalStatus,
+  PrintJob,
+  BuzzerState,
+  QrAccountConfig,
 } from "../types/pos";
 import { seedProducts } from "../data/seedProducts";
 import {
@@ -39,6 +42,9 @@ class PosDatabase extends Dexie {
   cashShifts!: Table<CashShift, string>;
   cashMovements!: Table<CashMovement, string>;
   cashCloseSummaries!: Table<CashCloseSummary, string>;
+  printJobs!: Table<PrintJob, string>;
+  activeBuzzers!: Table<BuzzerState, string>;
+  qrAccounts!: Table<QrAccountConfig, string>;
 
   constructor() {
     super("KioscoTermasPOS");
@@ -156,6 +162,43 @@ class PosDatabase extends Dexie {
           movementsTable.bulkPut(normalizedMovements),
           summariesTable.bulkPut(normalizedSummaries),
         ]);
+      });
+
+    this.version(7)
+      .stores({
+        products: "id, [businessId+branchId], [businessId+branchId+category], category, barcode",
+        sales: "id, [businessId+branchId], [businessId+branchId+status], [businessId+branchId+shiftId], [businessId+branchId+settledInShiftId], shiftId, settledInShiftId, status, createdAt",
+        paymentHistory: "id, [businessId+branchId]",
+        invoices: "id, saleId, invoiceType, invoiceNumber, [businessId+branchId], [businessId+branchId+fiscalStatus], fiscalStatus, createdAt",
+        settings: "key",
+        cashShifts: "id, &[businessId+branchId+shiftNumber], [businessId+branchId+status]",
+        cashMovements: "id, shiftId, [businessId+branchId], [businessId+branchId+shiftId]",
+        cashCloseSummaries: "id, &shiftId, [businessId+branchId], [businessId+branchId+closedAt]",
+        printJobs: "id, saleId, status, target, kind, createdAt",
+        activeBuzzers: "number, saleId, assignedAt",
+        qrAccounts: "id, [businessId+branchId], [businessId+branchId+enabled]",
+      })
+      .upgrade(async (transaction) => {
+        const qrTable = transaction.table("qrAccounts");
+        const existingCount = await qrTable.count();
+        if (existingCount === 0) {
+          await qrTable.bulkPut([
+            {
+              id: "QR_1",
+              label: "QR 1 - Caja Principal",
+              enabled: true,
+              businessId: "grupo-termal",
+              branchId: "termas-kiosco",
+            },
+            {
+              id: "QR_2",
+              label: "QR 2 - Barra / Auxiliar",
+              enabled: true,
+              businessId: "grupo-termal",
+              branchId: "termas-kiosco",
+            },
+          ]);
+        }
       });
   }
 }
@@ -949,6 +992,54 @@ export async function putPaidSale(sale: Sale): Promise<Sale> {
     await db.sales.put(attributedSale);
     return attributedSale;
   });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Print jobs, buzzers y cuentas QR
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+export function getPrintJobs(): Promise<PrintJob[]> {
+  return db.printJobs.toCollection().reverse().sortBy("createdAt");
+}
+
+export function putPrintJobs(jobs: PrintJob[]): Promise<void> {
+  return db.printJobs.bulkPut(jobs).then(() => undefined);
+}
+
+export function putPrintJob(job: PrintJob): Promise<string> {
+  return db.printJobs.put(job);
+}
+
+export function getActiveBuzzers(): Promise<BuzzerState[]> {
+  return db.activeBuzzers
+    .filter((buzzer) => !buzzer.releasedAt)
+    .sortBy("assignedAt");
+}
+
+export function putActiveBuzzers(buzzers: BuzzerState[]): Promise<void> {
+  return db.activeBuzzers.bulkPut(buzzers).then(() => undefined);
+}
+
+export function putActiveBuzzer(buzzer: BuzzerState): Promise<string> {
+  return db.activeBuzzers.put(buzzer);
+}
+
+export function deleteActiveBuzzer(number: string): Promise<void> {
+  return db.activeBuzzers.delete(number);
+}
+
+export function getQrAccounts(
+  businessId: string,
+  branchId: string,
+): Promise<QrAccountConfig[]> {
+  return db.qrAccounts
+    .where("[businessId+branchId]")
+    .equals([businessId, branchId])
+    .toArray();
+}
+
+export function putQrAccounts(accounts: QrAccountConfig[]): Promise<void> {
+  return db.qrAccounts.bulkPut(accounts).then(() => undefined);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════

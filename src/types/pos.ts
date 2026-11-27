@@ -60,6 +60,10 @@ export interface Product {
   isFavorite?: boolean;
   /** Color de etiqueta para la UI (hex o nombre CSS) */
   colorTag?: string;
+  /** Si true, el producto se prepara antes de entregar al cliente. */
+  requiresPrep?: boolean;
+  /** Estación donde se prepara el producto elaborado. */
+  prepStation?: "COCINA" | "BARRA";
 }
 
 /** Datos del formulario para alta y edición rápida de productos */
@@ -75,6 +79,8 @@ export interface ProductFormData {
   modifiers?: ModifierOption[];
   isFavorite?: boolean;
   colorTag?: string;
+  requiresPrep?: boolean;
+  prepStation?: "COCINA" | "BARRA";
 }
 
 /* ── Carrito ───────────────────────────────────────────────────────────────── */
@@ -188,6 +194,52 @@ export interface Sale {
   fiscalStatus?: FiscalStatus;
   cae?: string;
   customer?: FiscalCustomer;
+  /** Cuenta QR concreta que recibió el cobro pendiente o confirmado. */
+  qrAccountId?: string;
+  qrAccountLabel?: string;
+  /** Operador que realizó el cobro. */
+  operatedBy?: string;
+  /** Llamador asignado cuando la venta contiene preparación. */
+  buzzerNumber?: string;
+}
+
+export interface QrAccountConfig {
+  id: string;
+  label: string;
+  enabled: boolean;
+  businessId: string;
+  branchId: string;
+}
+
+export type PrintTarget =
+  | "TICKET_PRINTER_1"
+  | "TICKET_PRINTER_2"
+  | "KITCHEN_PRINTER";
+
+export type PrintJobKind = "CUSTOMER_TICKET" | "KITCHEN_COMANDA";
+export type PrintJobStatus = "QUEUED" | "PRINTING" | "PRINTED" | "FAILED";
+
+export interface PrintJob {
+  id: string;
+  saleId: string;
+  ticketNumber: string;
+  buzzerNumber?: string;
+  kind: PrintJobKind;
+  target: PrintTarget;
+  status: PrintJobStatus;
+  payload: string;
+  attempts: number;
+  lastError?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BuzzerState {
+  number: string;
+  saleId: string;
+  ticketNumber: string;
+  assignedAt: string;
+  releasedAt?: string;
 }
 
 /* ── Caja ──────────────────────────────────────────────────────────────────── */
@@ -262,6 +314,8 @@ export interface CashCloseSummary {
   salesCountCancelled: number;
   totalCancelledAmount: number;
   totalsByPayment: CashAmountsByPaymentMethod;
+  /** Desglose conciliable de cobros QR por cuenta. */
+  totalsByQrAccount?: Record<string, number>;
   openingCash: number;
   cashInTotal: number;
   withdrawalsTotal: number;

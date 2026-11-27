@@ -87,6 +87,7 @@ export function calculateCashCloseSummary(
   let cancelledUnpaidGrossCents = 0;
   let latePaymentsCount = 0;
   let latePaymentsAmountCents = 0;
+  const totalsByQrAccountCents = new Map<string, number>();
 
   for (const sale of sales) {
     const belongsToShift = sale.shiftId === shift.id;
@@ -118,6 +119,12 @@ export function calculateCashCloseSummary(
 
     paidSaleCount += 1;
     collectedCents[sale.paymentMethod] += totalCents;
+    if (sale.paymentMethod === "QR" && sale.qrAccountId) {
+      totalsByQrAccountCents.set(
+        sale.qrAccountId,
+        (totalsByQrAccountCents.get(sale.qrAccountId) ?? 0) + totalCents,
+      );
+    }
     if (isLatePayment) {
       latePaymentsCount += 1;
       latePaymentsAmountCents += totalCents;
@@ -220,6 +227,12 @@ export function calculateCashCloseSummary(
     salesCountCancelled: cancelledSaleCount,
     totalCancelledAmount: fromCents(cancelledGrossCents),
     totalsByPayment: collectedByPaymentMethod,
+    totalsByQrAccount: Object.fromEntries(
+      [...totalsByQrAccountCents.entries()].map(([id, cents]) => [
+        id,
+        fromCents(cents),
+      ]),
+    ),
     openingCash: fromCents(openingCashCents),
     cashInTotal: fromCents(cashInCents),
     withdrawalsTotal: fromCents(withdrawalCents),

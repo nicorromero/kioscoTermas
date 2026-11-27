@@ -22,6 +22,9 @@ import type {
   CashShift,
   PosnetReconciliationItem,
   ShiftApprovalStatus,
+  QrAccountConfig,
+  PrintJob,
+  BuzzerState,
 } from "../types/pos";
 import { seedProducts } from "../data/seedProducts";
 import {
@@ -54,7 +57,18 @@ import {
   toggleFavorite as dbToggleFavorite,
   putProduct,
   deleteProduct,
+  getPrintJobs,
+  putPrintJobs,
+  putPrintJob,
+  getActiveBuzzers,
+  putActiveBuzzers,
+  putActiveBuzzer,
+  deleteActiveBuzzer,
+  getQrAccounts,
+  putQrAccounts,
 } from "../db/indexedDb";
+import { buildDispatchJobs } from "../utils/dispatchUtils";
+import { sendPrintJob } from "../services/printerBridge";
 import {
   cloneProductData,
   normalizeProductDraft,
@@ -179,6 +193,12 @@ export interface PosState {
   // ── Resiliencia Offline ──
   isOffline: boolean;
 
+  // ── Operadores, QR, llamadores e impresión ──
+  activeOperator: string;
+  qrAccounts: QrAccountConfig[];
+  activeBuzzers: BuzzerState[];
+  printJobs: PrintJob[];
+
   // ── Acciones: inicialización ──
   hydrate: (businessId?: string, branchId?: string) => Promise<void>;
 
@@ -204,6 +224,8 @@ export interface PosState {
     invoiceType?: InvoiceType,
     customer?: FiscalCustomer,
     cashReceived?: number,
+    qrAccountId?: string,
+    buzzerNumber?: string,
   ) => Promise<Sale>;
   markSalePaid: (saleId: string) => Promise<void>;
   markSaleRejected: (saleId: string) => Promise<void>;
@@ -222,6 +244,16 @@ export interface PosState {
     invoiceType?: InvoiceType,
     customer?: FiscalCustomer,
   ) => Promise<void>;
+
+  setActiveOperator: (operator: string) => void;
+  assignNextBuzzer: (saleId: string, ticketNumber: string) => Promise<BuzzerState | null>;
+  assignBuzzer: (number: string, saleId: string, ticketNumber: string) => Promise<BuzzerState | null>;
+  releaseBuzzer: (buzzerNumber: string) => Promise<void>;
+  enqueuePrintJobs: (jobs: PrintJob[]) => Promise<void>;
+  markPrintJobSuccess: (jobId: string) => Promise<void>;
+  markPrintJobFailed: (jobId: string, error: string) => Promise<void>;
+  retryPrintJob: (jobId: string) => Promise<void>;
+  reprintSaleTickets: (saleId: string) => Promise<void>;
 
   // ── Acciones: caja ──
   openShift: (input: {
@@ -309,6 +341,10 @@ export const usePosStore = create<PosState>()(
     completedSales: [],
     invoices: [],
     isOffline: initialOfflineSetting,
+    activeOperator: "Operador 1",
+    qrAccounts: [],
+    activeBuzzers: [],
+    printJobs: [],
 
     /* ════════════════════════════════════════════════════════════════════════
        Hydrate: Carga completa desde IndexedDB (Catálogo + Ventas + Invoices + Settings)
@@ -335,6 +371,16 @@ export const usePosStore = create<PosState>()(
         // 4. Cargar ventas completadas y comprobantes
         const completedSales = await getCompletedSales(biz, branch);
         const invoices = await getInvoices(biz, branch);
+        const printJobs = await getPrintJobs();
+        const activeBuzzers = await getActiveBuzzers();
+        let qrAccounts = await getQrAccounts(biz, branch);
+        if (qrAccounts.length === 0) {
+          qrAccounts = [
+            { id: "QR_1", label: "QR 1 - Caja Principal", enabled: true, businessId: biz, branchId: branch },
+            { id: "QR_2", label: "QR 2 - Barra / Auxiliar", enabled: true, businessId: biz, branchId: branch },
+          ];
+          await putQrAccounts(qrAccounts);
+        }
 
         // 5. Cargar estado de simulación offline persistido
         const isOffline = await getSetting("offlineMode", initialOfflineSetting);
@@ -356,6 +402,9 @@ export const usePosStore = create<PosState>()(
           completedSales,
           invoices,
           isOffline,
+          qrAccounts,
+          activeBuzzers,
+          printJobs,
         });
       } catch (err) {
         console.warn("Aviso IndexedDB (operando en memoria):", err);
@@ -779,6 +828,8 @@ export const usePosStore = create<PosState>()(
       invoiceType = "FACTURA_B",
       customer,
       cashReceived,
+      qrAccountId,
+      buzzerNumber,
     ) => {
       const {
         cart,
@@ -788,6 +839,8 @@ export const usePosStore = create<PosState>()(
         businessId,
         branchId,
         activeShift,
+        activeOperator,
+        qrAccounts,
       } = get();
       if (cart.length === 0) throw new Error("El carrito está vacío");
 
@@ -817,6 +870,12 @@ export const usePosStore = create<PosState>()(
           : { businessName: "Responsable Inscripto", taxCondition: "RESPONSABLE_INSCRIPTO" });
 
       const saleId = draftId;
+      const qrAccount =
+        qrAccountId && qrAccountId.length > 0
+          ? qrAccounts.find((account) => account.id === qrAccountId)
+          : paymentMethod === "QR"
+            ? qrAccounts.find((account) => account.id === "QR_1")
+            : undefined;
 
       const sale: Sale = {
         id: saleId,
@@ -837,6 +896,10 @@ export const usePosStore = create<PosState>()(
         updatedAt: timestamp,
         invoiceType,
         customer: resolvedCustomer,
+        qrAccountId: qrAccount?.id,
+        qrAccountLabel: qrAccount?.label,
+        operatedBy: activeOperator,
+        buzzerNumber: buzzerNumber?.trim() || undefined,
       };
 
       // 1. Vaciar carrito INMEDIATAMENTE (0 ms de bloqueo para el operador)
@@ -881,7 +944,7 @@ export const usePosStore = create<PosState>()(
       const { isOffline } = get();
 
       const existing = (await getSale(saleId)) || get().queue.find((s) => s.id === saleId);
-      if (!existing) return;
+      if (!existing || existing.status === "PAGADA") return;
 
       const invoiceType: InvoiceType = existing.invoiceType || "FACTURA_B";
       const invoiceNumber =
@@ -926,7 +989,25 @@ export const usePosStore = create<PosState>()(
         updatedAt: timestamp,
         closedAt: timestamp,
       };
-      const persistedSale = await putPaidSale(updatedSale);
+      const dispatch = buildDispatchJobs(updatedSale, get().products, get().activeBuzzers);
+      const dispatchedSale = dispatch.sale;
+      const persistedSale = await putPaidSale(dispatchedSale);
+      await get().enqueuePrintJobs(dispatch.jobs);
+
+      let nextActiveBuzzers = get().activeBuzzers;
+      if (dispatch.buzzerNumber) {
+        const buzzer: BuzzerState = {
+          number: dispatch.buzzerNumber,
+          saleId: persistedSale.id,
+          ticketNumber: dispatch.jobs[0]?.ticketNumber ?? persistedSale.id,
+          assignedAt: timestamp,
+        };
+        await putActiveBuzzer(buzzer);
+        nextActiveBuzzers = [
+          ...nextActiveBuzzers.filter((entry) => entry.number !== buzzer.number),
+          buzzer,
+        ];
+      }
 
       // Crear comprobante fiscal
       const netAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total / 1.21).toFixed(2)) : persistedSale.total;
@@ -965,6 +1046,13 @@ export const usePosStore = create<PosState>()(
           state.paymentHistory,
           persistedSale,
         ),
+        printJobs: [
+          ...dispatch.jobs,
+          ...state.printJobs.filter(
+            (job) => !dispatch.jobs.some((entry) => entry.id === job.id),
+          ),
+        ],
+        activeBuzzers: nextActiveBuzzers,
       }));
 
       await Promise.all([
@@ -1116,7 +1204,7 @@ export const usePosStore = create<PosState>()(
       const { isOffline } = get();
 
       const existing = (await getSale(saleId)) || get().queue.find((s) => s.id === saleId);
-      if (!existing) return;
+      if (!existing || existing.status === "PAGADA") return;
 
       if (!Number.isFinite(cashReceived) || cashReceived < existing.total) {
         throw new Error("El monto recibido no cubre el total");
@@ -1157,7 +1245,24 @@ export const usePosStore = create<PosState>()(
         updatedAt: timestamp,
         closedAt: timestamp,
       };
-      const persistedSale = await putPaidSale(updatedSale);
+      const dispatch = buildDispatchJobs(updatedSale, get().products, get().activeBuzzers);
+      const persistedSale = await putPaidSale(dispatch.sale);
+      await get().enqueuePrintJobs(dispatch.jobs);
+
+      let nextActiveBuzzers = get().activeBuzzers;
+      if (dispatch.buzzerNumber) {
+        const buzzer: BuzzerState = {
+          number: dispatch.buzzerNumber,
+          saleId: persistedSale.id,
+          ticketNumber: dispatch.jobs[0]?.ticketNumber ?? persistedSale.id,
+          assignedAt: timestamp,
+        };
+        await putActiveBuzzer(buzzer);
+        nextActiveBuzzers = [
+          ...nextActiveBuzzers.filter((entry) => entry.number !== buzzer.number),
+          buzzer,
+        ];
+      }
 
       const netAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total / 1.21).toFixed(2)) : persistedSale.total;
       const ivaAmount = invoiceType === "FACTURA_A" ? Number((persistedSale.total - netAmount).toFixed(2)) : 0;
@@ -1194,6 +1299,13 @@ export const usePosStore = create<PosState>()(
           state.paymentHistory,
           persistedSale,
         ),
+        printJobs: [
+          ...dispatch.jobs,
+          ...state.printJobs.filter(
+            (job) => !dispatch.jobs.some((entry) => entry.id === job.id),
+          ),
+        ],
+        activeBuzzers: nextActiveBuzzers,
       }));
 
       await Promise.all([
@@ -1322,6 +1434,151 @@ export const usePosStore = create<PosState>()(
       return invoice;
     },
 
+    setActiveOperator: (operator) => {
+      set({ activeOperator: operator.trim() || "Operador 1" });
+    },
+
+    assignNextBuzzer: async (saleId, ticketNumber) => {
+      const { activeBuzzers } = get();
+      const used = activeBuzzers.filter((buzzer) => !buzzer.releasedAt);
+      let number: string | null = null;
+      for (let index = 1; index <= 50; index += 1) {
+        const candidate = String(index).padStart(2, "0");
+        if (!used.some((buzzer) => buzzer.number === candidate)) {
+          number = candidate;
+          break;
+        }
+      }
+      if (!number) return null;
+      return get().assignBuzzer(number, saleId, ticketNumber);
+    },
+
+    assignBuzzer: async (number, saleId, ticketNumber) => {
+      const normalized = number.trim().padStart(2, "0");
+      const numeric = Number(normalized);
+      if (!/^\d{1,2}$/.test(normalized) || numeric < 1 || numeric > 50) {
+        throw new Error("El llamador debe estar entre 01 y 50");
+      }
+      const { activeBuzzers } = get();
+      if (activeBuzzers.some((buzzer) => buzzer.number === normalized && !buzzer.releasedAt)) {
+        throw new Error(`El llamador ${normalized} ya está en uso`);
+      }
+      const buzzer: BuzzerState = {
+        number: normalized,
+        saleId,
+        ticketNumber,
+        assignedAt: now(),
+      };
+      await putActiveBuzzer(buzzer);
+      set((state) => ({
+        activeBuzzers: [
+          ...state.activeBuzzers.filter((entry) => entry.number !== normalized),
+          buzzer,
+        ],
+      }));
+      return buzzer;
+    },
+
+    releaseBuzzer: async (buzzerNumber) => {
+      const normalized = buzzerNumber.trim();
+      await deleteActiveBuzzer(normalized);
+      set((state) => ({
+        activeBuzzers: state.activeBuzzers.filter(
+          (buzzer) => buzzer.number !== normalized,
+        ),
+      }));
+    },
+
+    enqueuePrintJobs: async (jobs) => {
+      await putPrintJobs(jobs);
+      set((state) => ({
+        printJobs: [
+          ...jobs,
+          ...state.printJobs.filter(
+            (job) => !jobs.some((entry) => entry.id === job.id),
+          ),
+        ],
+      }));
+      for (const job of jobs) {
+        void sendPrintJob(job)
+          .then(() => get().markPrintJobSuccess(job.id))
+          .catch((error: unknown) =>
+            get().markPrintJobFailed(
+              job.id,
+              error instanceof Error ? error.message : "Fallo de impresión",
+            ),
+          );
+      }
+    },
+
+    markPrintJobSuccess: async (jobId) => {
+      const existing = get().printJobs.find((job) => job.id === jobId);
+      if (!existing) return;
+      const updated: PrintJob = {
+        ...existing,
+        status: "PRINTED",
+        updatedAt: now(),
+      };
+      await putPrintJob(updated);
+      set((state) => ({
+        printJobs: state.printJobs.map((job) =>
+          job.id === jobId ? updated : job,
+        ),
+      }));
+    },
+
+    markPrintJobFailed: async (jobId, error) => {
+      const existing = get().printJobs.find((job) => job.id === jobId);
+      if (!existing) return;
+      const updated: PrintJob = {
+        ...existing,
+        status: "FAILED",
+        attempts: existing.attempts + 1,
+        lastError: error,
+        updatedAt: now(),
+      };
+      await putPrintJob(updated);
+      set((state) => ({
+        printJobs: state.printJobs.map((job) =>
+          job.id === jobId ? updated : job,
+        ),
+      }));
+    },
+
+    retryPrintJob: async (jobId) => {
+      const existing = get().printJobs.find((job) => job.id === jobId);
+      if (!existing) return;
+      const updated: PrintJob = {
+        ...existing,
+        status: "QUEUED",
+        attempts: existing.attempts + 1,
+        updatedAt: now(),
+      };
+      await putPrintJob(updated);
+      set((state) => ({
+        printJobs: state.printJobs.map((job) =>
+          job.id === jobId ? updated : job,
+        ),
+      }));
+      void sendPrintJob(updated)
+        .then(() => get().markPrintJobSuccess(jobId))
+        .catch((error: unknown) =>
+          get().markPrintJobFailed(
+            jobId,
+            error instanceof Error ? error.message : "Fallo de impresión",
+          ),
+        );
+    },
+
+    reprintSaleTickets: async (saleId) => {
+      const sale =
+        get().completedSales.find((entry) => entry.id === saleId) ??
+        (await getSale(saleId));
+      if (!sale) return;
+      const dispatch = buildDispatchJobs(sale, get().products, get().activeBuzzers);
+      await get().enqueuePrintJobs(dispatch.jobs);
+    },
+
     /* ════════════════════════════════════════════════════════════════════════
        Catálogo – Favoritos
        ════════════════════════════════════════════════════════════════════════ */
@@ -1417,6 +1674,60 @@ export const usePosStore = create<PosState>()(
     },
   })),
 );
+
+if (typeof BroadcastChannel !== "undefined") {
+  const syncChannel = new BroadcastChannel("kiosco-termas-sync");
+  let applyingRemoteState = false;
+
+  syncChannel.onmessage = (event: MessageEvent) => {
+    const payload = event.data as {
+      cart?: CartItem[];
+      cartTotal?: number;
+      cartDiscount?: number;
+      selectedLineKey?: string | null;
+      queue?: Sale[];
+      completedSales?: Sale[];
+      activeOperator?: string;
+      activeBuzzers?: BuzzerState[];
+      printJobs?: PrintJob[];
+      qrAccounts?: QrAccountConfig[];
+    };
+    applyingRemoteState = true;
+    usePosStore.setState({
+      ...(payload.cart ? { cart: payload.cart } : {}),
+      ...(payload.cartTotal !== undefined ? { cartTotal: payload.cartTotal } : {}),
+      ...(payload.cartDiscount !== undefined ? { cartDiscount: payload.cartDiscount } : {}),
+      ...(payload.selectedLineKey !== undefined
+        ? { selectedLineKey: payload.selectedLineKey }
+        : {}),
+      ...(payload.queue ? { queue: payload.queue } : {}),
+      ...(payload.completedSales ? { completedSales: payload.completedSales } : {}),
+      ...(payload.activeOperator ? { activeOperator: payload.activeOperator } : {}),
+      ...(payload.activeBuzzers ? { activeBuzzers: payload.activeBuzzers } : {}),
+      ...(payload.printJobs ? { printJobs: payload.printJobs } : {}),
+      ...(payload.qrAccounts ? { qrAccounts: payload.qrAccounts } : {}),
+    });
+    queueMicrotask(() => {
+      applyingRemoteState = false;
+    });
+  };
+
+  usePosStore.subscribe((state) => {
+    if (applyingRemoteState) return;
+    syncChannel.postMessage({
+      cart: state.cart,
+      cartTotal: state.cartTotal,
+      cartDiscount: state.cartDiscount,
+      selectedLineKey: state.selectedLineKey,
+      queue: state.queue,
+      completedSales: state.completedSales,
+      activeOperator: state.activeOperator,
+      activeBuzzers: state.activeBuzzers,
+      printJobs: state.printJobs,
+      qrAccounts: state.qrAccounts,
+    });
+  });
+}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    Selectores derivados optimizados

@@ -186,7 +186,7 @@ export const CatalogColumn: React.FC<CatalogColumnProps> = ({
             title="Crear un nuevo producto en mostrador"
           >
             <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>+ Nuevo Ítem</span>
+            <span> Nuevo Ítem</span>
           </button>
         )}
 

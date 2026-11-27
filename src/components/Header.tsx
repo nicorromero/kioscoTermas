@@ -10,8 +10,11 @@ import {
   Layers,
   Sun,
   Moon,
+  BellRing,
+  Printer,
 } from "lucide-react";
 import { usePosStore } from "../store/usePosStore";
+import { formatCurrency } from "../utils/format";
 
 export type PosDemoView = "caja" | "facturacion" | "dueno";
 export type PosColorTheme = "dark" | "arena";
@@ -24,6 +27,7 @@ interface HeaderProps {
   queuedCount: number;
   colorTheme: PosColorTheme;
   onToggleColorTheme: () => void;
+  onOpenBuzzerPanel: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,6 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
   queuedCount,
   colorTheme,
   onToggleColorTheme,
+  onOpenBuzzerPanel,
 }) => {
   const businessId = usePosStore((s) => s.businessId);
   const branchId = usePosStore((s) => s.branchId);
@@ -47,6 +52,25 @@ export const Header: React.FC<HeaderProps> = ({
     (s) =>
       s.invoices.filter((i) => i.fiscalStatus === "PENDIENTE_ENVIO_ARCA").length
   );
+  const activeShift = usePosStore((s) => s.activeShift);
+  const activeOperator = usePosStore((s) => s.activeOperator);
+  const activeBuzzers = usePosStore((s) => s.activeBuzzers);
+  const printJobs = usePosStore((s) => s.printJobs);
+  const completedSales = usePosStore((s) => s.completedSales);
+  const failedJobs = printJobs.filter((job) => job.status === "FAILED").length;
+  const shiftCash = completedSales
+    .filter((sale) => sale.shiftId === activeShift?.id && sale.status === "PAGADA")
+    .filter((sale) => sale.paymentMethod === "EFECTIVO")
+    .reduce((sum, sale) => sum + sale.total, 0);
+  const expectedCash =
+    (activeShift?.openingCash ?? 0) +
+    shiftCash +
+    (activeShift?.movements ?? [])
+      .filter((movement) => movement.type === "CASH_IN")
+      .reduce((sum, movement) => sum + movement.amount, 0) -
+    (activeShift?.movements ?? [])
+      .filter((movement) => movement.type === "WITHDRAWAL" || movement.type === "EXPENSE")
+      .reduce((sum, movement) => sum + movement.amount, 0);
 
   return (
     <header className="h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-4 flex items-center justify-between shrink-0 select-none">
@@ -152,6 +176,22 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* ── Atajos Rápidos & Simulador QR ── */}
       <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenBuzzerPanel}
+          className="hidden lg:flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/90 px-2 py-1.5 text-[10px] text-slate-200"
+          title="Abrir llamadores y cola de impresión (F10)"
+        >
+          <span className="font-bold">{activeShift ? "Turno activo" : "Sin turno"}</span>
+          {activeShift && <span className="text-emerald-300">Teórico {formatCurrency(expectedCash)}</span>}
+          <span className="text-sky-300">{activeOperator} (F4)</span>
+          <BellRing className="h-3.5 w-3.5 text-amber-300" />
+          <span>{activeBuzzers.length} activos</span>
+          <Printer className="h-3.5 w-3.5" />
+          <span className={failedJobs > 0 ? "text-rose-400 font-bold" : "text-emerald-300"}>
+            {failedJobs > 0 ? `${failedJobs} fallo(s)` : "OK"}
+          </span>
+        </button>
         {/* Cheat sheet atajos (visible en pantallas grandes) */}
         <div className="hidden xl:flex items-center gap-1.5 text-[10px] text-slate-400">
           <span className="bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700 font-mono text-emerald-400">

@@ -17,6 +17,12 @@ export interface PosShortcutsOptions {
   onIncrementLastItem?: () => void;
   /** Callback al presionar '-' (ajusta cantidad del último ítem en carrito) */
   onDecrementLastItem?: () => void;
+  onToggleOperator?: () => void;
+  onSendToQr1?: () => void;
+  onSendToQr2?: () => void;
+  onOpenBuzzerPanel?: () => void;
+  onNavigateCatalog?: (direction: "UP" | "DOWN") => void;
+  onEnterCatalogSelection?: () => void;
   /** Si true, deshabilita temporalmente los atajos */
   disabled?: boolean;
 }
@@ -36,6 +42,12 @@ export function usePosShortcuts({
   onEscape,
   onIncrementLastItem,
   onDecrementLastItem,
+  onToggleOperator,
+  onSendToQr1,
+  onSendToQr2,
+  onOpenBuzzerPanel,
+  onNavigateCatalog,
+  onEnterCatalogSelection,
   disabled = false,
 }: PosShortcutsOptions): void {
   useEffect(() => {
@@ -73,6 +85,42 @@ export function usePosShortcuts({
 
       // ── Si el foco está dentro de un campo de texto o formulario, no disparar atajos de mostrador ──
       if (isInput) {
+        return;
+      }
+
+      if (event.key === "F4") {
+        event.preventDefault();
+        onToggleOperator?.();
+        return;
+      }
+
+      if (event.key === "F6") {
+        event.preventDefault();
+        onSendToQr1?.();
+        return;
+      }
+
+      if (event.key === "F7") {
+        event.preventDefault();
+        onSendToQr2?.();
+        return;
+      }
+
+      if (event.key === "F10") {
+        event.preventDefault();
+        onOpenBuzzerPanel?.();
+        return;
+      }
+
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        onNavigateCatalog?.(event.key === "ArrowUp" ? "UP" : "DOWN");
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onEnterCatalogSelection?.();
         return;
       }
 
@@ -123,6 +171,12 @@ export function usePosShortcuts({
     onEscape,
     onIncrementLastItem,
     onDecrementLastItem,
+    onToggleOperator,
+    onSendToQr1,
+    onSendToQr2,
+    onOpenBuzzerPanel,
+    onNavigateCatalog,
+    onEnterCatalogSelection,
     disabled,
   ]);
 }
