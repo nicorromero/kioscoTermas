@@ -23,8 +23,6 @@ import { SimulationPanel } from "./components/SimulationPanel";
 import { BillingOfflineView } from "./components/BillingOfflineView";
 import { OwnerMobileView } from "./components/OwnerMobileView";
 import { CashShiftManager } from "./components/CashShiftManager";
-<<<<<<< HEAD
-=======
 
 function readColorThemePreference(): PosColorTheme {
   try {
@@ -36,7 +34,6 @@ function readColorThemePreference(): PosColorTheme {
     return "dark";
   }
 }
->>>>>>> agents/caja-kiosco-turnos-movimientos-cierre
 
 export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
