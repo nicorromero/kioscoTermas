@@ -205,15 +205,15 @@ export function App() {
 
   // Atajo F8: Abrir cobro normal (QR, Tarjeta, Efectivo)
   const handleOpenCheckout = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen) return;
     setIsPaymentModalOpen(true);
-  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen]);
 
   // Atajo F9: Efectivo Rápido (Factura B + vuelto instantáneo)
   const handleQuickCash = useCallback(() => {
-    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen || configuringProduct !== null) return;
+    if (cart.length === 0 || isPaymentModalOpen || isQuickCashModalOpen || isProductDrawerOpen) return;
     setIsQuickCashModalOpen(true);
-  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen, configuringProduct]);
+  }, [cart.length, isPaymentModalOpen, isQuickCashModalOpen, isProductDrawerOpen]);
 
   // Registro de atajos de teclado (deshabilitados fuera de la vista Caja o con Drawer abierto)
   usePosShortcuts({
